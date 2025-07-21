@@ -2468,7 +2468,9 @@ async def help_command(update: telegram.Update, context: telegram.ext.ContextTyp
         return
     
     help_text = """
-🤖 **ShoeBot - Visų Komandų Sąrašas**
+🤖 **ShoeBot - Greitas Komandų Sąrašas**
+
+📚 **Nori detalų vadovą?** Naudok `/komandos` - pilnas vadovas su pavyzdžiais!
 
 **📊 Pagrindinės Komandos:**
 📊 /balsuoju - Balsuoti už pardavėjus balsavimo grupėje
@@ -2530,6 +2532,162 @@ Specialūs renginiai su bonusiniais taškais:
     
     msg = await update.message.reply_text(help_text)
     context.job_queue.run_once(delete_message_job, 90, data=(chat_id, msg.message_id))
+
+async def komandos(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show comprehensive list of all commands with detailed explanations"""
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    
+    if not is_allowed_group(chat_id):
+        msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Check if user is admin for admin commands section
+    is_admin = user_id == ADMIN_CHAT_ID
+    
+    commands_text = f"""
+📚 **VISŲ KOMANDŲ VADOVAS** 📚
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏆 **BALSAVIMO SISTEMA**
+📊 `/barygos` - Pardavėjų reitingai (savaitės, mėnesio, visų laikų)
+📊 `/balsuoju` - Nukreipia į balsavimo grupę (+5 tšk, 1x/savaitę)
+👎 `/nepatiko @pardavejas priežastis` - Skundu pardavėją (+5 tšk, 1x/savaitę)
+
+🛡️ **SAUGUMO SISTEMA**
+🚨 `/scameris @username įrodymai` - Pranešti scamerį (+3 tšk, 5x/dieną)
+🔍 `/patikra @username` - Patikrinti ar vartotojas scameris
+📋 `/scameriai` - Peržiūrėti visų patvirtintų scamerių sąrašą
+
+💰 **TAŠKŲ SISTEMA**
+💰 `/points` - Patikrinti savo taškus ir pokalbių seriją
+👑 `/chatking` - Visų laikų pokalbių lyderiai su pasiekimų lygiais
+
+🎮 **ŽAIDIMAI IR VEIKLA**
+🎯 `/coinflip suma @vartotojas` - Iššūkis monetos metimui (laimėtojas gauna taškus)
+📋 `/apklausa klausimas` - Sukurti grupės apklausą su Taip/Ne mygtukais
+   Pavyzdys: `/apklausa Ar patinka nauja bot funkcija?`
+
+ℹ️ **INFORMACIJA**
+📚 `/komandos` - Šis detalus komandų sąrašas
+🤖 `/help` - Trumpas pagalbos tekstas
+❓ `/whoami` - Tavo vartotojo informacija ir ID
+🔧 `/debug` - Grupės administratoriai (tik adminams)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💎 **TAŠKŲ GAVIMO BŪDAI**
+• 📊 Balsavimas už pardavėją: **+5 taškų** (1x per savaitę)
+• 👎 Skundas pardavėjui: **+5 taškų** (1x per savaitę)
+• 🚨 Scamerio pranešimas: **+3 taškų** (5x per dieną)
+• 💬 Kasdieniai pokalbiai: **1-3 taškų** + serijos bonusas
+• 🔥 Serijos bonusas: **+1 tšk** už kiekvieną 3 dienų seriją
+• 🎯 Monetos metimas: **Laimėtojo suma** taškų
+
+🏅 **POKALBIŲ LYGIAI**
+🌱 **Pradžia:** 1-99 žinučių
+📈 **Naujokas:** 100-499 žinučių  
+🌟 **Aktyvus:** 500-999 žinučių
+💎 **Meistras:** 1,000-4,999 žinučių
+⚡ **Ekspertas:** 5,000-9,999 žinučių
+🔥 **Legenda:** 10,000+ žinučių
+
+⏰ **AUTOMATINIAI RESTARTAI**
+• 🗓️ Savaitės balsai: kas sekmadienį 23:00
+• 📅 Mėnesio balsai: kiekvieną mėnesio 1-ą dieną
+• 💬 Pokalbių taškų suvestinė: kasdien 6:00
+
+🔒 **SAUGUMO PATARIMAI**
+• Visada naudok `/patikra @username` prieš sandorį
+• Pranešk apie scamerius su detaliais įrodymais
+• Saugok savo asmeninę informaciją
+• Nenurodyti pin kodų ar slaptažodžių
+
+📱 **NAUDOJIMO PATARIMAI**
+• Komandos veikia tik šioje grupėje
+• Naudok @ prieš vartotojo vardus
+• Dalis komandų automatiškai ištrinamos po laiko
+• Aktyvus dalyvavimas = daugiau taškų"""
+
+    if is_admin:
+        commands_text += f"""
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔧 **ADMIN KOMANDOS** (Tik tau)
+
+**Pardavėjų valdymas:**
+• `/addseller @username` - Pridėti patikimą pardavėją
+• `/removeseller @username` - Pašalinti pardavėją
+• `/pardavejoinfo @username` - Pardavėjo statistikos
+
+**Scamerių moderavimas:**
+• `/approve_scammer [ID]` - Patvirtinti scamer pranešimą
+• `/reject_scammer [ID]` - Atmesti scamer pranešimą  
+• `/pending_reports` - Peržiūrėti laukiančius pranešimus
+• `/scammer_list` - Detalus admin scamerių sąrašas
+
+**Taškų valdymas:**
+• `/addpoints Amount @UserID` - Pridėti taškų vartotojui
+• `/pridetitaskus @Seller Amount` - Pridėti balsų pardavėjui
+
+**Balsavimo valdymas:**
+• `/reset_weekly` - Nukryžiuoti savaitės balsus
+• `/reset_monthly` - Nukryžiuoti mėnesio balsus
+• `/updatevoting` - Atnaujinti balsavimo mygtukus
+
+**Media valdymas:**
+• `/addftbaryga` - Pridėti media prie /balsuoju (atsakyti į žinutę)
+• `/addftbaryga2` - Pridėti media prie /barygos (atsakyti į žinutę)
+• `/editpardavejai 'tekstas'` - Keisti balsavimo žinutės tekstą
+
+**Sistemos komandos:**
+• `/privatus` - Nukreipti į privatų admin valdymą"""
+
+    commands_text += f"""
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 **GREITI PAVYZDŽIAI**
+• Balsuoti: `/balsuoju` → Spausk nuorodą → Rinktis pardavėją
+• Patikrinti: `/patikra @username` → Gauni saugumo ataskaitą  
+• Pranešti: `/scameris @blogas Nesiunčia prekių, ignoruoja`
+• Žaisti: `/coinflip 10 @friends` → Mėtkyos monetą už 10 tšk
+• Skundas: `/nepatiko @pardavejas Bloga kokybė, vėluoja`
+
+📊 **STATISTIKOS**
+• Aktyvūs vartotojai šiandien: ~{len(daily_messages)}
+• Visų laikų žinučių: {sum(alltime_messages.values()):,}
+• Patvirtinti scameriai: {len(confirmed_scammers)}
+• Patikimi pardavėjai: {len(trusted_sellers)}
+
+💡 **PRO PATARIMAI**
+• Rašyk kasdien - serija didina taškų gavimą
+• Dalyvaukite apklausose - stiprina bendruomenę  
+• Praneškit apie scamerius - apsaugot kitus
+• Sekite pardavėjų reitingus - raskite geriausius
+
+Norint gauti pilną pagalbą: `/help`
+"""
+
+    try:
+        msg = await update.message.reply_text(commands_text, parse_mode='Markdown')
+        context.job_queue.run_once(delete_message_job, 180, data=(chat_id, msg.message_id))  # Keep longer for reading
+        
+        # Log command usage
+        analytics.log_command_usage('komandos', user_id, chat_id)
+        
+    except telegram.error.TelegramError as e:
+        # Fallback without markdown if formatting fails
+        logger.error(f"Error sending formatted komandos: {str(e)}")
+        try:
+            fallback_text = commands_text.replace('**', '').replace('*', '')
+            msg = await update.message.reply_text(fallback_text)
+            context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+        except Exception as fallback_error:
+            logger.error(f"Fallback komandos also failed: {str(fallback_error)}")
+            msg = await update.message.reply_text("❌ Klaida rodant komandų sąrašą!")
+            context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
 
 async def achievements(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
     """Show user achievements and progress"""
@@ -2953,6 +3111,7 @@ application.add_handler(CommandHandler(['remove_weekly_points'], remove_weekly_p
 application.add_handler(CommandHandler(['remove_monthly_points'], remove_monthly_points))
 application.add_handler(CommandHandler(['remove_alltime_points'], remove_alltime_points))
 application.add_handler(CommandHandler(['help'], help_command))
+application.add_handler(CommandHandler(['komandos'], komandos))
 application.add_handler(CommandHandler(['achievements'], achievements))
 application.add_handler(CommandHandler(['challenges'], challenges))
 application.add_handler(CommandHandler(['leaderboard'], leaderboard))
