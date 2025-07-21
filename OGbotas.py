@@ -654,9 +654,13 @@ async def handle_vote_button(update: telegram.Update, context: telegram.ext.Cont
     last_vote_attempt[user_id] = now
 
     await query.answer("Ačiū už jūsų balsą, 5 taškai buvo pridėti prie jūsų sąskaitos.")
-    confirmation_msg = await context.bot.send_message(chat_id=chat_id, text=f"Ačiū už jūsų balsą už {seller}, 5 taškai buvo pridėti!")
     
-    context.job_queue.run_once(delete_message_job, 60, data=(chat_id, confirmation_msg.message_id))
+    # Get voter's username
+    voter_username = f"@{query.from_user.username}" if query.from_user.username else query.from_user.first_name or f"User {user_id}"
+    
+    confirmation_msg = await context.bot.send_message(chat_id=chat_id, text=f"{voter_username} balsavo už {seller}, 5 taškai buvo pridėti!")
+    
+    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, confirmation_msg.message_id))
     
     save_data(votes_weekly, 'votes_weekly.pkl')
     save_data(votes_monthly, 'votes_monthly.pkl')
