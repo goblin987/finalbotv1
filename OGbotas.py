@@ -2468,66 +2468,38 @@ async def help_command(update: telegram.Update, context: telegram.ext.ContextTyp
         return
     
     help_text = """
-🤖 **ShoeBot - Greitas Komandų Sąrašas**
+🤖 Greitas Komandų Sąrašas
 
-📚 **Nori detalų vadovą?** Naudok `/komandos` - pilnas vadovas su pavyzdžiais!
+📚 Nori detalų vadovą? Naudok /komandos - pilnas vadovas su pavyzdžiais!
 
-**📊 Pagrindinės Komandos:**
+📊 Pagrindinės Komandos:
 📊 /balsuoju - Balsuoti už pardavėjus balsavimo grupėje
 👎 /nepatiko @pardavejas priežastis - Pateikti skundą (+5 tšk)
 💰 /points - Patikrinti savo taškus ir pokalbių seriją
 👑 /chatking - Visų laikų pokalbių lyderiai
 📈 /barygos - Pardavėjų reitingai ir statistika
 
-**🛡️ Saugumo Sistema:**
+🛡️ Saugumo Sistema:
 🚨 /scameris @username įrodymai - Pranešti apie scamerį (+3 tšk, 5/dieną)
 🔍 /patikra @username - Patikrinti ar vartotojas scameris
 📋 /scameriai - Peržiūrėti visų patvirtintų scamerių sąrašą
 
-**🎮 Žaidimai ir Veikla:**
+🎮 Žaidimai ir Veikla:
 🎯 /coinflip suma @vartotojas - Iššūkis monetos metimui
 📋 /apklausa klausimas - Sukurti grupės apklausą
 
-**🏆 Pasiekimai ir Iššūkiai:**
-🏅 /achievements - Tavo pasiekimai ir pažanga
-🎯 /challenges - Savaitės iššūkiai ir užduotys
-🏆 /leaderboard - Bendros lyderių lentos
-📊 /mystats - Detalūs tavo statistikos
+ℹ️ Informacija:
+📚 /komandos - Pilnas komandų vadovas
+❓ /whoami - Tavo vartotojo informacija
 
-**⚙️ Informacija:**
-/debug - Grupės administratoriai (tik admin)
-/whoami - Tavo vartotojo informacija
-
-**🎖️ Taškų Sistema:**
+🎖️ Taškų Sistema:
 • Balsavimas už pardavėją: +5 taškų (1x per savaitę)
 • Skundas pardavėjui: +5 taškų (1x per savaitę)  
 • Scamerio pranešimas: +3 taškų (5x per dieną)
 • Kasdieniai pokalbiai: 1-3 taškų + serijos bonusas
 • Serijos bonusas: +1 tšk už kiekvieną 3 dienų seriją
-• Pasiekimai: 10-200 taškų už specialius veiksmus
-• Savaitės iššūkiai: 60-100 taškų už užbaigimą
 
-**🎉 Sezoniniai Renginiai:**
-Specialūs renginiai su bonusiniais taškais:
-• 🎄 Kalėdos (2x taškai)
-• 🐰 Velykos (1.5x taškai)  
-• ☀️ Vasara (1.3x taškai)
-
-**🛡️ Automatinis Moderavimas:**
-• Anti-spam apsauga
-• Automatinis perspėjimų sistema
-• Blokuojami spam šablonai
-• Komandų laikmatis (cooldown)
-
-**📅 Automatiniai Restartimai:**
-• Savaitės balsai nukryžiuojami kas sekmadienį 23:00
-• Mėnesio balsai nukryžiuojami kiekvieno mėnesio 1-ą dieną
-
-**👨‍💼 Admin Komandos:**
-/botstats - Bot analitikos ir statistikos
-/moderation - Moderacijos pultas ir nustatymai
-/reset_weekly - Rankiniu būdu nukryžiuoti savaitės balsus
-/reset_monthly - Rankiniu būdu nukryžiuoti mėnesio balsus
+💬 Rašyk kasdien kaupiant taškus ir seriją!
 """
     
     msg = await update.message.reply_text(help_text)
@@ -2543,8 +2515,7 @@ async def komandos(update: telegram.Update, context: telegram.ext.ContextTypes.D
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
         return
     
-    # Check if user is admin for admin commands section
-    is_admin = user_id == ADMIN_CHAT_ID
+
     
     commands_text = f"""
 📚 **VISŲ KOMANDŲ VADOVAS** 📚
@@ -2610,39 +2581,7 @@ async def komandos(update: telegram.Update, context: telegram.ext.ContextTypes.D
 • Dalis komandų automatiškai ištrinamos po laiko
 • Aktyvus dalyvavimas = daugiau taškų"""
 
-    if is_admin:
-        commands_text += f"""
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔧 **ADMIN KOMANDOS** (Tik tau)
-
-**Pardavėjų valdymas:**
-• `/addseller @username` - Pridėti patikimą pardavėją
-• `/removeseller @username` - Pašalinti pardavėją
-• `/pardavejoinfo @username` - Pardavėjo statistikos
-
-**Scamerių moderavimas:**
-• `/approve_scammer [ID]` - Patvirtinti scamer pranešimą
-• `/reject_scammer [ID]` - Atmesti scamer pranešimą  
-• `/pending_reports` - Peržiūrėti laukiančius pranešimus
-• `/scammer_list` - Detalus admin scamerių sąrašas
-
-**Taškų valdymas:**
-• `/addpoints Amount @UserID` - Pridėti taškų vartotojui
-• `/pridetitaskus @Seller Amount` - Pridėti balsų pardavėjui
-
-**Balsavimo valdymas:**
-• `/reset_weekly` - Nukryžiuoti savaitės balsus
-• `/reset_monthly` - Nukryžiuoti mėnesio balsus
-• `/updatevoting` - Atnaujinti balsavimo mygtukus
-
-**Media valdymas:**
-• `/addftbaryga` - Pridėti media prie /balsuoju (atsakyti į žinutę)
-• `/addftbaryga2` - Pridėti media prie /barygos (atsakyti į žinutę)
-• `/editpardavejai 'tekstas'` - Keisti balsavimo žinutės tekstą
-
-**Sistemos komandos:**
-• `/privatus` - Nukreipti į privatų admin valdymą"""
 
     commands_text += f"""
 
