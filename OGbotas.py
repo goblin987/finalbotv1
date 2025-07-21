@@ -364,6 +364,12 @@ pending_activation = {}
 username_to_id = {}
 polls = {}
 
+# Scammer tracking system
+pending_scammer_reports = load_data('pending_scammer_reports.pkl', {})  # report_id: {username, reporter_id, proof, timestamp, chat_id}
+confirmed_scammers = load_data('confirmed_scammers.pkl', {})  # username: {confirmed_by, proof, timestamp, reports_count}
+scammer_report_id = load_data('scammer_report_id.pkl', 0)
+user_report_cooldown = defaultdict(lambda: datetime.min.replace(tzinfo=TIMEZONE))
+
 def is_allowed_group(chat_id: str) -> bool:
     return str(chat_id) in allowed_groups
 
@@ -2028,6 +2034,374 @@ async def remove_alltime_points(update: telegram.Update, context: telegram.ext.C
         msg = await update.message.reply_text("Naudok: /remove_alltime_points @Seller Amount")
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
 
+# Scammer tracking system commands
+async def scameris(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Report a scammer with proof"""
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    
+    if not is_allowed_group(chat_id):
+        msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Check cooldown (24 hours between reports)
+    now = datetime.now(TIMEZONE)
+    last_report = user_report_cooldown.get(user_id, datetime.min.replace(tzinfo=TIMEZONE))
+    if now - last_report < timedelta(hours=24):
+        hours_left = 24 - int((now - last_report).total_seconds() // 3600)
+        msg = await update.message.reply_text(f"Galite pranešti tik kartą per 24 valandas! Liko: {hours_left}h")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Input validation
+    if len(context.args) < 2:
+        msg = await update.message.reply_text(
+            "📋 **Naudojimas:** `/scameris @username įrodymai`\n\n"
+            "**Pavyzdys:** `/scameris @scammer123 Nepavede prekės, ignoruoja žinutes`\n"
+            "**Reikia:** Detalūs įrodymai kodėl šis žmogus yra scameris"
+        )
+        context.job_queue.run_once(delete_message_job, 60, data=(chat_id, msg.message_id))
+        return
+    
+    # Sanitize and validate inputs
+    reported_username = sanitize_username(context.args[0])
+    if not reported_username or len(reported_username) < 2:
+        msg = await update.message.reply_text("❌ Netinkamas vartotojo vardas! Naudok @username formatą.")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    proof = sanitize_text_input(" ".join(context.args[1:]), max_length=500)
+    if not proof or len(proof.strip()) < 10:
+        msg = await update.message.reply_text("❌ Prašau nurodyti detalius įrodymus (bent 10 simbolių)!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Check if already confirmed scammer
+    if reported_username.lower() in confirmed_scammers:
+        msg = await update.message.reply_text(f"⚠️ {reported_username} jau yra patvirtintų scamerių sąraše!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Check if user is trying to report themselves
+    reporter_username = f"@{update.message.from_user.username}" if update.message.from_user.username else None
+    if reporter_username and reported_username.lower() == reporter_username.lower():
+        msg = await update.message.reply_text("❌ Negalite pranešti apie save!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    try:
+        global scammer_report_id
+        scammer_report_id += 1
+        
+        # Store the report
+        pending_scammer_reports[scammer_report_id] = {
+            'username': reported_username,
+            'reporter_id': user_id,
+            'reporter_username': reporter_username or f"User {user_id}",
+            'proof': proof,
+            'timestamp': now,
+            'chat_id': chat_id
+        }
+        
+        user_report_cooldown[user_id] = now
+        
+        # Send to admin for review
+        admin_message = (
+            f"🚨 **NAUJAS SCAMER PRANEŠIMAS** 🚨\n\n"
+            f"**Report ID:** #{scammer_report_id}\n"
+            f"**Pranešė:** {reporter_username or f'User {user_id}'}\n"
+            f"**Apie:** {reported_username}\n"
+            f"**Įrodymai:** {proof}\n"
+            f"**Laikas:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"**Veiksmai:**\n"
+            f"✅ `/approve_scammer {scammer_report_id}` - Patvirtinti\n"
+            f"❌ `/reject_scammer {scammer_report_id}` - Atmesti\n"
+            f"📋 `/scammer_details {scammer_report_id}` - Detalės"
+        )
+        
+        await safe_send_message(context.bot, ADMIN_CHAT_ID, admin_message, parse_mode='Markdown')
+        
+        # Confirm to user
+        msg = await update.message.reply_text(
+            f"✅ **Pranešimas pateiktas!**\n\n"
+            f"**Report ID:** #{scammer_report_id}\n"
+            f"**Apie:** {reported_username}\n"
+            f"**Statusas:** Laukia admin peržiūros\n\n"
+            f"Adminai peržiūrės jūsų pranešimą ir priims sprendimą. Ačiū už saugios bendruomenės kūrimą! 🛡️"
+        )
+        context.job_queue.run_once(delete_message_job, 90, data=(chat_id, msg.message_id))
+        
+        # Save data
+        save_data(pending_scammer_reports, 'pending_scammer_reports.pkl')
+        save_data(scammer_report_id, 'scammer_report_id.pkl')
+        
+        # Add points for reporting
+        user_points[user_id] = user_points.get(user_id, 0) + 3
+        save_data(user_points, 'user_points.pkl')
+        
+        logger.info(f"Scammer report #{scammer_report_id}: {reported_username} reported by user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error processing scammer report: {str(e)}")
+        msg = await update.message.reply_text("❌ Klaida pateikiant pranešimą. Bandykite vėliau.")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+
+async def patikra(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Check if a user is in the scammer list"""
+    chat_id = update.message.chat_id
+    
+    if not is_allowed_group(chat_id):
+        msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text(
+            "📋 **Naudojimas:** `/patikra @username`\n\n"
+            "**Pavyzdys:** `/patikra @user123`\n"
+            "Patikrinkite ar vartotojas yra scamerių sąraše"
+        )
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Sanitize username
+    check_username = sanitize_username(context.args[0])
+    if not check_username or len(check_username) < 2:
+        msg = await update.message.reply_text("❌ Netinkamas vartotojo vardas! Naudok @username formatą.")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Check if in confirmed scammers list
+    if check_username.lower() in confirmed_scammers:
+        scammer_info = confirmed_scammers[check_username.lower()]
+        confirmed_date = scammer_info['timestamp'].strftime('%Y-%m-%d')
+        reports_count = scammer_info.get('reports_count', 1)
+        
+        msg = await update.message.reply_text(
+            f"🚨 **SCAMER RASTAS!** 🚨\n\n"
+            f"**Vartotojas:** {check_username}\n"
+            f"**Statusas:** ❌ Patvirtintas scameris\n"
+            f"**Patvirtinta:** {confirmed_date}\n"
+            f"**Pranešimų:** {reports_count}\n"
+            f"**Įrodymai:** {scammer_info.get('proof', 'Nenurodyta')}\n\n"
+            f"⚠️ **ATSARGIAI!** Šis vartotojas yra žinomas scameris!"
+        )
+        context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+    else:
+        # Check if there are pending reports
+        pending_count = sum(1 for report in pending_scammer_reports.values() 
+                          if report['username'].lower() == check_username.lower())
+        
+        if pending_count > 0:
+            msg = await update.message.reply_text(
+                f"🔍 **PATIKRA ATLIKTA**\n\n"
+                f"**Vartotojas:** {check_username}\n"
+                f"**Statusas:** ⚠️ Yra nepatvirtintų pranešimų ({pending_count})\n"
+                f"**Rekomendacija:** Būkite atsargūs, pranešimai dar tikrinami\n\n"
+                f"✅ Nėra patvirtintų scam įrašų"
+            )
+        else:
+            msg = await update.message.reply_text(
+                f"✅ **PATIKRA ATLIKTA**\n\n"
+                f"**Vartotojas:** {check_username}\n"
+                f"**Statusas:** ✅ Švarus\n"
+                f"**Pranešimų:** 0\n\n"
+                f"Šis vartotojas nėra mūsų scamerių sąraše."
+            )
+        
+        context.job_queue.run_once(delete_message_job, 60, data=(chat_id, msg.message_id))
+
+# Admin commands for scammer management
+async def approve_scammer(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to approve a scammer report"""
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    
+    if user_id != ADMIN_CHAT_ID:
+        msg = await update.message.reply_text("Tik adminas gali patvirtinti scamer pranešimus!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /approve_scammer [report_id]")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    try:
+        report_id = int(context.args[0])
+        if report_id not in pending_scammer_reports:
+            msg = await update.message.reply_text(f"Pranešimas #{report_id} nerastas!")
+            context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+            return
+        
+        report = pending_scammer_reports[report_id]
+        username = report['username'].lower()
+        
+        # Move to confirmed scammers
+        confirmed_scammers[username] = {
+            'confirmed_by': user_id,
+            'proof': report['proof'],
+            'timestamp': datetime.now(TIMEZONE),
+            'reports_count': 1,
+            'original_report_id': report_id
+        }
+        
+        # Remove from pending
+        del pending_scammer_reports[report_id]
+        
+        # Save data
+        save_data(confirmed_scammers, 'confirmed_scammers.pkl')
+        save_data(pending_scammer_reports, 'pending_scammer_reports.pkl')
+        
+        # Notify original reporter
+        try:
+            await context.bot.send_message(
+                chat_id=report['chat_id'],
+                text=f"✅ **PRANEŠIMAS PATVIRTINTAS**\n\n"
+                     f"Jūsų pranešimas apie {report['username']} buvo patvirtintas!\n"
+                     f"Vartotojas pridėtas į scamerių sąrašą. Ačiū už bendruomenės saugumą! 🛡️"
+            )
+        except:
+            pass  # Chat might be unavailable
+        
+        msg = await update.message.reply_text(
+            f"✅ **SCAMER PATVIRTINTAS**\n\n"
+            f"**Report ID:** #{report_id}\n"
+            f"**Scameris:** {report['username']}\n"
+            f"**Pridėtas į sąrašą:** ✅\n\n"
+            f"Vartotojas dabar bus rodomas kaip scameris per /patikra komandą."
+        )
+        context.job_queue.run_once(delete_message_job, 60, data=(chat_id, msg.message_id))
+        
+        logger.info(f"Admin {user_id} approved scammer report #{report_id} for {report['username']}")
+        
+    except ValueError:
+        msg = await update.message.reply_text("Neteisingas report ID!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+    except Exception as e:
+        logger.error(f"Error approving scammer: {str(e)}")
+        msg = await update.message.reply_text("Klaida patvirtinant pranešimą!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+
+async def reject_scammer(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to reject a scammer report"""
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    
+    if user_id != ADMIN_CHAT_ID:
+        msg = await update.message.reply_text("Tik adminas gali atmesti scamer pranešimus!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /reject_scammer [report_id]")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    try:
+        report_id = int(context.args[0])
+        if report_id not in pending_scammer_reports:
+            msg = await update.message.reply_text(f"Pranešimas #{report_id} nerastas!")
+            context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+            return
+        
+        report = pending_scammer_reports[report_id]
+        
+        # Remove from pending
+        del pending_scammer_reports[report_id]
+        save_data(pending_scammer_reports, 'pending_scammer_reports.pkl')
+        
+        # Notify original reporter
+        try:
+            await context.bot.send_message(
+                chat_id=report['chat_id'],
+                text=f"❌ **PRANEŠIMAS ATMESTAS**\n\n"
+                     f"Jūsų pranešimas apie {report['username']} buvo atmestas.\n"
+                     f"Įrodymai buvo nepakankant arba neteisingi."
+            )
+        except:
+            pass
+        
+        msg = await update.message.reply_text(
+            f"❌ **PRANEŠIMAS ATMESTAS**\n\n"
+            f"**Report ID:** #{report_id}\n"
+            f"**Apie:** {report['username']}\n"
+            f"**Statusas:** Atmestas"
+        )
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        
+        logger.info(f"Admin {user_id} rejected scammer report #{report_id} for {report['username']}")
+        
+    except ValueError:
+        msg = await update.message.reply_text("Neteisingas report ID!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+    except Exception as e:
+        logger.error(f"Error rejecting scammer: {str(e)}")
+        msg = await update.message.reply_text("Klaida atmestant pranešimą!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+
+async def scammer_list(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show list of confirmed scammers (admin only)"""
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    
+    if user_id != ADMIN_CHAT_ID:
+        msg = await update.message.reply_text("Tik adminas gali matyti scamerių sąrašą!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if not confirmed_scammers:
+        msg = await update.message.reply_text("✅ Scamerių sąrašas tuščias!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    scammer_text = "🚨 **PATVIRTINTI SCAMERIAI** 🚨\n\n"
+    
+    for i, (username, info) in enumerate(confirmed_scammers.items(), 1):
+        date = info['timestamp'].strftime('%Y-%m-%d')
+        proof_short = info['proof'][:50] + "..." if len(info['proof']) > 50 else info['proof']
+        scammer_text += f"**{i}.** @{username}\n"
+        scammer_text += f"   📅 {date}\n"
+        scammer_text += f"   📝 {proof_short}\n\n"
+    
+    scammer_text += f"**Viso scamerių:** {len(confirmed_scammers)}"
+    
+    msg = await update.message.reply_text(scammer_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+
+async def pending_reports(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show pending scammer reports (admin only)"""
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    
+    if user_id != ADMIN_CHAT_ID:
+        msg = await update.message.reply_text("Tik adminas gali matyti laukiančius pranešimus!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if not pending_scammer_reports:
+        msg = await update.message.reply_text("✅ Nėra laukiančių pranešimų!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    reports_text = "⏳ **LAUKIANTYS PRANEŠIMAI** ⏳\n\n"
+    
+    for report_id, report in pending_scammer_reports.items():
+        date = report['timestamp'].strftime('%m-%d %H:%M')
+        proof_short = report['proof'][:40] + "..." if len(report['proof']) > 40 else report['proof']
+        
+        reports_text += f"**#{report_id}** {report['username']}\n"
+        reports_text += f"   👤 {report['reporter_username']}\n"
+        reports_text += f"   📅 {date}\n"
+        reports_text += f"   📝 {proof_short}\n"
+        reports_text += f"   ✅ `/approve_scammer {report_id}`\n"
+        reports_text += f"   ❌ `/reject_scammer {report_id}`\n\n"
+    
+    reports_text += f"**Viso pranešimų:** {len(pending_scammer_reports)}"
+    
+    msg = await update.message.reply_text(reports_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
 
 
 async def help_command(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
@@ -2048,6 +2422,10 @@ async def help_command(update: telegram.Update, context: telegram.ext.ContextTyp
 💰 /points - Patikrinti savo taškus ir pokalbių seriją
 👑 /chatking - Visų laikų pokalbių lyderiai
 📈 /barygos - Pardavėjų reitingai ir statistika
+
+**🛡️ Saugumo Sistema:**
+🚨 /scameris @username įrodymai - Pranešti apie scamerį (+3 tšk)
+🔍 /patikra @username - Patikrinti ar vartotojas scameris
 
 **🎮 Žaidimai ir Veikla:**
 🎯 /coinflip suma @vartotojas - Iššūkis monetos metimui
@@ -2525,6 +2903,14 @@ application.add_handler(CommandHandler(['leaderboard'], leaderboard))
 application.add_handler(CommandHandler(['mystats'], mystats))
 application.add_handler(CommandHandler(['botstats'], botstats))
 application.add_handler(CommandHandler(['moderation'], moderation_command))
+
+# Scammer tracking system handlers
+application.add_handler(CommandHandler(['scameris'], scameris))
+application.add_handler(CommandHandler(['patikra'], patikra))
+application.add_handler(CommandHandler(['approve_scammer'], approve_scammer))
+application.add_handler(CommandHandler(['reject_scammer'], reject_scammer))
+application.add_handler(CommandHandler(['scammer_list'], scammer_list))
+application.add_handler(CommandHandler(['pending_reports'], pending_reports))
 application.add_handler(MessageHandler(filters.Regex('^/start$') & filters.ChatType.PRIVATE, start_private))
 application.add_handler(CallbackQueryHandler(handle_vote_button, pattern="vote_"))
 application.add_handler(CallbackQueryHandler(handle_poll_button, pattern="poll_"))
