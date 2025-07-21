@@ -366,9 +366,8 @@ polls = {}
 
 # Scammer tracking system
 pending_scammer_reports = load_data('pending_scammer_reports.pkl', {})  # report_id: {username, reporter_id, proof, timestamp, chat_id}
-confirmed_scammers = load_data('confirmed_scammers.pkl', {})  # username: {confirmed_by, proof, timestamp, reports_count}
+confirmed_scammers = load_data('confirmed_scammers.pkl', {})  # username: {confirmed_by, reporter_id, proof, timestamp, reports_count}
 scammer_report_id = load_data('scammer_report_id.pkl', 0)
-user_report_cooldown = defaultdict(lambda: datetime.min.replace(tzinfo=TIMEZONE))
 
 def is_allowed_group(chat_id: str) -> bool:
     return str(chat_id) in allowed_groups
@@ -2045,12 +2044,23 @@ async def scameris(update: telegram.Update, context: telegram.ext.ContextTypes.D
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
         return
     
-    # Check cooldown (24 hours between reports)
+    # Check daily report limit (5 reports per day)
     now = datetime.now(TIMEZONE)
-    last_report = user_report_cooldown.get(user_id, datetime.min.replace(tzinfo=TIMEZONE))
-    if now - last_report < timedelta(hours=24):
-        hours_left = 24 - int((now - last_report).total_seconds() // 3600)
-        msg = await update.message.reply_text(f"Galite pranešti tik kartą per 24 valandas! Liko: {hours_left}h")
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Count reports made today
+    reports_today = sum(1 for report in pending_scammer_reports.values() 
+                       if report['reporter_id'] == user_id and report['timestamp'] >= today_start)
+    
+    # Also count approved reports from today
+    approved_today = sum(1 for scammer_info in confirmed_scammers.values() 
+                        if scammer_info.get('reporter_id') == user_id and 
+                        scammer_info['timestamp'] >= today_start)
+    
+    total_reports_today = reports_today + approved_today
+    
+    if total_reports_today >= 5:
+        msg = await update.message.reply_text(f"Pasiekėte dienų limitą! Galite pateikti iki 5 pranešimų per dieną. Šiandien: {total_reports_today}/5")
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
         return
     
@@ -2104,7 +2114,7 @@ async def scameris(update: telegram.Update, context: telegram.ext.ContextTypes.D
             'chat_id': chat_id
         }
         
-        user_report_cooldown[user_id] = now
+        # Track that user made a report today (for daily limit counting)
         
         # Send to admin for review
         admin_message = (
@@ -2241,6 +2251,7 @@ async def approve_scammer(update: telegram.Update, context: telegram.ext.Context
         # Move to confirmed scammers
         confirmed_scammers[username] = {
             'confirmed_by': user_id,
+            'reporter_id': report['reporter_id'],  # Track original reporter for daily limits
             'proof': report['proof'],
             'timestamp': datetime.now(TIMEZONE),
             'reports_count': 1,
@@ -2341,13 +2352,51 @@ async def reject_scammer(update: telegram.Update, context: telegram.ext.ContextT
         msg = await update.message.reply_text("Klaida atmestant pranešimą!")
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
 
+async def scameriai(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show list of confirmed scammers (public command)"""
+    chat_id = update.message.chat_id
+    
+    if not is_allowed_group(chat_id):
+        msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if not confirmed_scammers:
+        msg = await update.message.reply_text("✅ Scamerių sąrašas tuščias! Bendruomenė švarūs. 🛡️")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Create paginated list for mobile-friendly display
+    scammer_text = "🚨 **PATVIRTINTI SCAMERIAI** 🚨\n"
+    scammer_text += f"📊 Viso: {len(confirmed_scammers)} | Būkite atsargūs!\n\n"
+    
+    # Sort by most recent first
+    sorted_scammers = sorted(confirmed_scammers.items(), 
+                           key=lambda x: x[1]['timestamp'], reverse=True)
+    
+    for i, (username, info) in enumerate(sorted_scammers[:20], 1):  # Show top 20
+        date = info['timestamp'].strftime('%m-%d')
+        proof_short = info['proof'][:40] + "..." if len(info['proof']) > 40 else info['proof']
+        
+        scammer_text += f"🚫 **{i}. @{username}**\n"
+        scammer_text += f"   📅 {date} | 📝 {proof_short}\n\n"
+    
+    if len(confirmed_scammers) > 20:
+        scammer_text += f"... ir dar {len(confirmed_scammers) - 20} scamerių\n\n"
+    
+    scammer_text += "🔍 Naudok `/patikra @username` specifinei patikriai\n"
+    scammer_text += "🚨 Naudok `/scameris @user įrodymai` pranešti naują"
+    
+    msg = await update.message.reply_text(scammer_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+
 async def scammer_list(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
-    """Show list of confirmed scammers (admin only)"""
+    """Show detailed list of confirmed scammers (admin only)"""
     user_id = update.message.from_user.id
     chat_id = update.message.chat_id
     
     if user_id != ADMIN_CHAT_ID:
-        msg = await update.message.reply_text("Tik adminas gali matyti scamerių sąrašą!")
+        msg = await update.message.reply_text("Tik adminas gali matyti detalų scamerių sąrašą!")
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
         return
     
@@ -2356,19 +2405,24 @@ async def scammer_list(update: telegram.Update, context: telegram.ext.ContextTyp
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
         return
     
-    scammer_text = "🚨 **PATVIRTINTI SCAMERIAI** 🚨\n\n"
+    scammer_text = "🚨 **ADMIN - PATVIRTINTI SCAMERIAI** 🚨\n\n"
     
     for i, (username, info) in enumerate(confirmed_scammers.items(), 1):
-        date = info['timestamp'].strftime('%Y-%m-%d')
-        proof_short = info['proof'][:50] + "..." if len(info['proof']) > 50 else info['proof']
+        date = info['timestamp'].strftime('%Y-%m-%d %H:%M')
+        proof_short = info['proof'][:60] + "..." if len(info['proof']) > 60 else info['proof']
+        reporter_id = info.get('reporter_id', 'Unknown')
+        confirmed_by = info.get('confirmed_by', 'Unknown')
+        
         scammer_text += f"**{i}.** @{username}\n"
         scammer_text += f"   📅 {date}\n"
+        scammer_text += f"   👤 Reporter: {reporter_id}\n"
+        scammer_text += f"   ✅ Confirmed by: {confirmed_by}\n"
         scammer_text += f"   📝 {proof_short}\n\n"
     
     scammer_text += f"**Viso scamerių:** {len(confirmed_scammers)}"
     
     msg = await update.message.reply_text(scammer_text, parse_mode='Markdown')
-    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+    context.job_queue.run_once(delete_message_job, 180, data=(chat_id, msg.message_id))
 
 async def pending_reports(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
     """Show pending scammer reports (admin only)"""
@@ -2424,8 +2478,9 @@ async def help_command(update: telegram.Update, context: telegram.ext.ContextTyp
 📈 /barygos - Pardavėjų reitingai ir statistika
 
 **🛡️ Saugumo Sistema:**
-🚨 /scameris @username įrodymai - Pranešti apie scamerį (+3 tšk)
+🚨 /scameris @username įrodymai - Pranešti apie scamerį (+3 tšk, 5/dieną)
 🔍 /patikra @username - Patikrinti ar vartotojas scameris
+📋 /scameriai - Peržiūrėti visų patvirtintų scamerių sąrašą
 
 **🎮 Žaidimai ir Veikla:**
 🎯 /coinflip suma @vartotojas - Iššūkis monetos metimui
@@ -2444,6 +2499,7 @@ async def help_command(update: telegram.Update, context: telegram.ext.ContextTyp
 **🎖️ Taškų Sistema:**
 • Balsavimas už pardavėją: +5 taškų (1x per savaitę)
 • Skundas pardavėjui: +5 taškų (1x per savaitę)  
+• Scamerio pranešimas: +3 taškų (5x per dieną)
 • Kasdieniai pokalbiai: 1-3 taškų + serijos bonusas
 • Serijos bonusas: +1 tšk už kiekvieną 3 dienų seriją
 • Pasiekimai: 10-200 taškų už specialius veiksmus
@@ -2907,9 +2963,10 @@ application.add_handler(CommandHandler(['moderation'], moderation_command))
 # Scammer tracking system handlers
 application.add_handler(CommandHandler(['scameris'], scameris))
 application.add_handler(CommandHandler(['patikra'], patikra))
+application.add_handler(CommandHandler(['scameriai'], scameriai))  # Public scammer list
 application.add_handler(CommandHandler(['approve_scammer'], approve_scammer))
 application.add_handler(CommandHandler(['reject_scammer'], reject_scammer))
-application.add_handler(CommandHandler(['scammer_list'], scammer_list))
+application.add_handler(CommandHandler(['scammer_list'], scammer_list))  # Admin detailed list
 application.add_handler(CommandHandler(['pending_reports'], pending_reports))
 application.add_handler(MessageHandler(filters.Regex('^/start$') & filters.ChatType.PRIVATE, start_private))
 application.add_handler(CallbackQueryHandler(handle_vote_button, pattern="vote_"))
