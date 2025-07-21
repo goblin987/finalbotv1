@@ -1238,6 +1238,14 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
     footer += f"🌟 Visų laikų balsų: **{total_alltime_votes}**\n"
     footer += f"👥 Aktyvūs pardavėjai: **{active_sellers}**\n\n"
     
+    # Add next reset information
+    next_sunday = now + timedelta(days=(6 - now.weekday()))
+    next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
+    
+    footer += "⏰ **KITAS RESTARTAS**\n"
+    footer += f"• Savaitės: {next_sunday.strftime('%m-%d %H:%M')}\n"
+    footer += f"• Mėnesio: {next_month.strftime('%m-%d %H:%M')}\n\n"
+    
     footer += "💡 Balsuok kas savaitę už mėgstamus pardavėjus!\n"
     footer += "🎯 Skundai padeda kokybei (+5 tšk)"
     
