@@ -500,7 +500,7 @@ async def startas(update: telegram.Update, context: telegram.ext.ContextTypes.DE
         if is_allowed_group(chat_id):
             msg = await update.message.reply_text(
                 "🤖 Sveiki! Štai galimi veiksmai:\n\n"
-                "📊 /balsuoju - Balsuoti už pardavėjus\n"
+                "📊 /balsuoti - Balsuoti už pardavėjus balsavimo grupėje\n"
                 "👎 /nepatiko @pardavejas priežastis - Pateikti skundą (5 tšk)\n"
                 "💰 /points - Patikrinti savo taškus ir seriją\n"
                 "👑 /chatking - Pokalbių lyderiai\n"
@@ -571,7 +571,7 @@ async def start_private(update: telegram.Update, context: telegram.ext.ContextTy
         keyboard = [
             [InlineKeyboardButton("Pridėti pardavėją", callback_data="admin_addseller")],
             [InlineKeyboardButton("Pašalinti pardavėją", callback_data="admin_removeseller")],
-            [InlineKeyboardButton("Redaguoti /balsuoju tekstą", callback_data="admin_editpardavejai")]
+                            [InlineKeyboardButton("Redaguoti /balsuoti tekstą", callback_data="admin_editpardavejai")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("Sveikas, admin! Ką nori valdyti?", reply_markup=reply_markup)
@@ -596,7 +596,7 @@ async def handle_admin_button(update: telegram.Update, context: telegram.ext.Con
         await query.edit_message_text("Įvesk: /editpardavejai 'Naujas tekstas'")
     await query.answer()
 
-async def balsuoju(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+async def balsuoti(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
     if not is_allowed_group(chat_id):
         msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
@@ -702,17 +702,17 @@ async def addftbaryga(update: telegram.Update, context: telegram.ext.ContextType
         media = reply.photo[-1]
         featured_media_id = media.file_id
         featured_media_type = 'photo'
-        last_addftbaryga_message = "Paveikslėlis pridėtas prie /balsuoju!"
+        last_addftbaryga_message = "Paveikslėlis pridėtas prie /balsuoti!"
     elif reply.animation:
         media = reply.animation
         featured_media_id = media.file_id
         featured_media_type = 'animation'
-        last_addftbaryga_message = "GIF pridėtas prie /balsuoju!"
+        last_addftbaryga_message = "GIF pridėtas prie /balsuoti!"
     elif reply.video:
         media = reply.video
         featured_media_id = media.file_id
         featured_media_type = 'video'
-        last_addftbaryga_message = "Video pridėtas prie /balsuoju!"
+        last_addftbaryga_message = "Video pridėtas prie /balsuoti!"
     else:
         msg = await update.message.reply_text("Atsakyk į žinutę su paveikslėliu, GIF ar video!")
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
@@ -1035,7 +1035,7 @@ async def addseller(update: telegram.Update, context: telegram.ext.ContextTypes.
     
     try:
         trusted_sellers.append(vendor)
-        msg = await update.message.reply_text(f"Pardavėjas {vendor} pridėtas! Jis dabar matomas /balsuoju sąraše.")
+        msg = await update.message.reply_text(f"Pardavėjas {vendor} pridėtas! Jis dabar matomas /balsuoti sąraše.")
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
         await update_voting_message(context)
         logger.info(f"Admin {user_id} added seller: {vendor}")
@@ -2473,7 +2473,7 @@ async def help_command(update: telegram.Update, context: telegram.ext.ContextTyp
 📚 Nori detalų vadovą? Naudok /komandos - pilnas vadovas su pavyzdžiais!
 
 📊 Pagrindinės Komandos:
-📊 /balsuoju - Balsuoti už pardavėjus balsavimo grupėje
+📊 /balsuoti - Balsuoti už pardavėjus balsavimo grupėje
 👎 /nepatiko @pardavejas priežastis - Pateikti skundą (+5 tšk)
 💰 /points - Patikrinti savo taškus ir pokalbių seriją
 👑 /chatking - Visų laikų pokalbių lyderiai
@@ -2523,7 +2523,7 @@ async def komandos(update: telegram.Update, context: telegram.ext.ContextTypes.D
 
 🏆 **BALSAVIMO SISTEMA**
 📊 `/barygos` - Pardavėjų reitingai (savaitės, mėnesio, visų laikų)
-📊 `/balsuoju` - Nukreipia į balsavimo grupę (+5 tšk, 1x/savaitę)
+📊 `/balsuoti` - Nukreipia į balsavimo grupę (+5 tšk, 1x/savaitę)
 👎 `/nepatiko @pardavejas priežastis` - Skundu pardavėją (+5 tšk, 1x/savaitę)
 
 🛡️ **SAUGUMO SISTEMA**
@@ -2537,8 +2537,7 @@ async def komandos(update: telegram.Update, context: telegram.ext.ContextTypes.D
 
 🎮 **ŽAIDIMAI IR VEIKLA**
 🎯 `/coinflip suma @vartotojas` - Iššūkis monetos metimui (laimėtojas gauna taškus)
-📋 `/apklausa klausimas` - Sukurti grupės apklausą su Taip/Ne mygtukais
-   Pavyzdys: `/apklausa Ar patinka nauja bot funkcija?`
+📋 `/apklausa klausimas` - Sukurti grupės apklausą
 
 ℹ️ **INFORMACIJA**
 📚 `/komandos` - Šis detalus komandų sąrašas
@@ -2588,7 +2587,7 @@ async def komandos(update: telegram.Update, context: telegram.ext.ContextTypes.D
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🎯 **GREITI PAVYZDŽIAI**
-• Balsuoti: `/balsuoju` → Spausk nuorodą → Rinktis pardavėją
+• Balsuoti: `/balsuoti` → Spausk nuorodą → Rinktis pardavėją
 • Patikrinti: `/patikra @username` → Gauni saugumo ataskaitą  
 • Pranešti: `/scameris @blogas Nesiunčia prekių, ignoruoja`
 • Žaisti: `/coinflip 10 @friends` → Mėtkyos monetą už 10 tšk
@@ -3026,7 +3025,7 @@ application.add_handler(CommandHandler(['addseller'], addseller))
 application.add_handler(CommandHandler(['removeseller'], removeseller))
 application.add_handler(CommandHandler(['pardavejoinfo'], sellerinfo))
 application.add_handler(CommandHandler(['barygos'], barygos))
-application.add_handler(CommandHandler(['balsuoju'], balsuoju))
+application.add_handler(CommandHandler(['balsuoti'], balsuoti))
 application.add_handler(CommandHandler(['chatking'], chatking))
 application.add_handler(CommandHandler(['coinflip'], coinflip))
 application.add_handler(CommandHandler(['accept_coinflip'], accept_coinflip))
@@ -3431,7 +3430,7 @@ class RateLimiter:
             'coinflip': 30,  # 30 seconds between coinflips
             'apklausa': 60,  # 1 minute between polls
             'nepatiko': 300,  # 5 minutes between complaints
-            'balsuoju': 10,  # 10 seconds between votes
+            'balsuoti': 10,  # 10 seconds between votes
         }
     
     def check_cooldown(self, user_id, command):
