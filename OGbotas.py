@@ -1161,7 +1161,7 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
             
             weekly_board += f"{icon} **{i}. {vendor_name}** — {score} balsų\n"
     
-    weekly_board += "\n"
+    weekly_board += "\n" + "─" * 25 + "\n\n"
     
     # Build Monthly Leaderboard
     monthly_board = "🗓️ **MĖNESIO LYDERIAI** 🗓️\n"
@@ -1194,7 +1194,7 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
             vendor_name = vendor[1:] if vendor.startswith('@') else vendor
             monthly_board += f"{icon} **{i}. {vendor_name}** — {score} balsų\n"
     
-    monthly_board += "\n"
+    monthly_board += "\n" + "─" * 25 + "\n\n"
     
     # Build All-Time Hall of Fame
     alltime_board = "🌟 **VISŲ LAIKŲ LEGENDOS** 🌟\n"
@@ -1224,7 +1224,7 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
             vendor_name = vendor[1:] if vendor.startswith('@') else vendor
             alltime_board += f"{icon} **{i}. {vendor_name}** — {score} balsų\n"
     
-    alltime_board += "\n"
+    alltime_board += "\n" + "─" * 25 + "\n\n"
     
     # Add simplified footer
     footer = "📊 **STATISTIKOS**\n"
@@ -1241,12 +1241,31 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
     footer += "💡 Balsuok kas savaitę už mėgstamus pardavėjus!\n"
     footer += "🎯 Skundai padeda kokybei (+5 tšk)"
     
-    # Combine all sections
+    # Combine all sections - ensure all parts are included
     full_message = header + weekly_board + monthly_board + alltime_board + footer
     
+    # Debug: Log message length for troubleshooting
+    logger.info(f"Barygos message length: {len(full_message)} characters")
+    
     try:
-        # Send with media if available
-        if barygos_media_id and barygos_media_type:
+        # Check message length - if too long for caption, send as separate text message
+        if len(full_message) > 1000 and barygos_media_id and barygos_media_type:
+            # Send media without caption first
+            if barygos_media_type == 'photo':
+                await context.bot.send_photo(chat_id=chat_id, photo=barygos_media_id)
+            elif barygos_media_type == 'animation':
+                await context.bot.send_animation(chat_id=chat_id, animation=barygos_media_id)
+            elif barygos_media_type == 'video':
+                await context.bot.send_video(chat_id=chat_id, video=barygos_media_id)
+            
+            # Then send full message as text
+            msg = await context.bot.send_message(
+                chat_id=chat_id, 
+                text=full_message,
+                parse_mode='Markdown'
+            )
+        elif barygos_media_id and barygos_media_type:
+            # Message is short enough for caption
             if barygos_media_type == 'photo':
                 msg = await context.bot.send_photo(
                     chat_id=chat_id, 
@@ -1275,6 +1294,7 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
                     parse_mode='Markdown'
                 )
         else:
+            # No media, send as text
             msg = await context.bot.send_message(
                 chat_id=chat_id, 
                 text=full_message,
