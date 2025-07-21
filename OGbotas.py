@@ -1125,26 +1125,23 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
     
     now = datetime.now(TIMEZONE)
     
-    # Create beautiful header with current time info
-    header = "🏆✨ **PARDAVĖJŲ REITINGAI** ✨🏆\n"
-    header += f"📅 {now.strftime('%Y-%m-%d %H:%M')} | 🕐 {now.strftime('%A')}\n"
-    header += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    # Create mobile-friendly header
+    header = "🏆 **PARDAVĖJŲ REITINGAI** 🏆\n"
+    header += f"📅 {now.strftime('%Y-%m-%d %H:%M')}\n\n"
     
     # Add custom admin message if exists
     if last_addftbaryga2_message:
         header += f"📢 {last_addftbaryga2_message}\n\n"
     
-    # Build Weekly Leaderboard with beautiful formatting
+    # Build mobile-friendly Weekly Leaderboard
     weekly_board = "🔥 **SAVAITĖS ČEMPIONAI** 🔥\n"
-    weekly_board += f"📊 Periodas: {now.strftime('%V savaitė')}\n"
-    weekly_board += "┌─────────────────────────────────────┐\n"
+    weekly_board += f"📊 {now.strftime('%V savaitė')}\n\n"
     
     if not votes_weekly:
-        weekly_board += "│    😴 Dar nėra balsų šią savaitę    │\n"
-        weekly_board += "│      Būk pirmas - balsuok dabar!    │\n"
+        weekly_board += "😴 Dar nėra balsų šią savaitę\n"
+        weekly_board += "Būk pirmas - balsuok dabar!\n\n"
     else:
         sorted_weekly = sorted(votes_weekly.items(), key=lambda x: x[1], reverse=True)
-        max_votes = sorted_weekly[0][1] if sorted_weekly else 1
         
         for i, (vendor, score) in enumerate(sorted_weekly[:10], 1):
             # Create trophy icons based on position
@@ -1159,23 +1156,16 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
             else:
                 icon = "📈"
             
-            # Create progress bar
-            progress = score / max(max_votes, 1)
-            bar_length = 15
-            filled = int(progress * bar_length)
-            progress_bar = "█" * filled + "░" * (bar_length - filled)
-            
             # Format vendor name (remove @)
             vendor_name = vendor[1:] if vendor.startswith('@') else vendor
             
-            weekly_board += f"│{icon} {i:2d}. {vendor_name:<12} │{score:3d}│{progress_bar}│\n"
+            weekly_board += f"{icon} **{i}. {vendor_name}** — {score} balsų\n"
     
-    weekly_board += "└─────────────────────────────────────┘\n\n"
+    weekly_board += "\n"
     
     # Build Monthly Leaderboard
     monthly_board = "🗓️ **MĖNESIO LYDERIAI** 🗓️\n"
-    monthly_board += f"📊 Periodas: {now.strftime('%B %Y')}\n"
-    monthly_board += "┌─────────────────────────────────────┐\n"
+    monthly_board += f"📊 {now.strftime('%B %Y')}\n\n"
     
     # Calculate current calendar month totals
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1185,11 +1175,10 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
         monthly_totals[vendor] = sum(s for _, s in current_month_votes)
     
     if not monthly_totals:
-        monthly_board += "│    🌱 Naujas mėnuo - nauji tikslai   │\n"
-        monthly_board += "│       Pradėk balsuoti dabar!        │\n"
+        monthly_board += "🌱 Naujas mėnuo - nauji tikslai\n"
+        monthly_board += "Pradėk balsuoti dabar!\n\n"
     else:
         sorted_monthly = sorted(monthly_totals.items(), key=lambda x: x[1], reverse=True)
-        max_monthly = sorted_monthly[0][1] if sorted_monthly else 1
         
         for i, (vendor, score) in enumerate(sorted_monthly[:10], 1):
             # Create crown icons for monthly leaders
@@ -1202,28 +1191,20 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
             else:
                 icon = "🌟"
             
-            # Create progress bar
-            progress = score / max(max_monthly, 1)
-            bar_length = 15
-            filled = int(progress * bar_length)
-            progress_bar = "█" * filled + "░" * (bar_length - filled)
-            
             vendor_name = vendor[1:] if vendor.startswith('@') else vendor
-            monthly_board += f"│{icon} {i:2d}. {vendor_name:<12} │{score:3d}│{progress_bar}│\n"
+            monthly_board += f"{icon} **{i}. {vendor_name}** — {score} balsų\n"
     
-    monthly_board += "└─────────────────────────────────────┘\n\n"
+    monthly_board += "\n"
     
     # Build All-Time Hall of Fame
     alltime_board = "🌟 **VISŲ LAIKŲ LEGENDOS** 🌟\n"
-    alltime_board += "📈 Istoriniai rekordai\n"
-    alltime_board += "┌─────────────────────────────────────┐\n"
+    alltime_board += "📈 Istoriniai rekordai\n\n"
     
     if not votes_alltime:
-        alltime_board += "│      🎯 Istorija tik prasideda      │\n"
-        alltime_board += "│     Tapk pirmąja legenda!          │\n"
+        alltime_board += "🎯 Istorija tik prasideda\n"
+        alltime_board += "Tapk pirmąja legenda!\n\n"
     else:
         sorted_alltime = sorted(votes_alltime.items(), key=lambda x: x[1], reverse=True)
-        max_alltime = sorted_alltime[0][1] if sorted_alltime else 1
         
         for i, (vendor, score) in enumerate(sorted_alltime[:10], 1):
             # Special icons for hall of fame
@@ -1240,41 +1221,25 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
             else:
                 icon = "🔸"
             
-            # Create progress bar
-            progress = score / max(max_alltime, 1)
-            bar_length = 15
-            filled = int(progress * bar_length)
-            progress_bar = "█" * filled + "░" * (bar_length - filled)
-            
             vendor_name = vendor[1:] if vendor.startswith('@') else vendor
-            alltime_board += f"│{icon} {i:2d}. {vendor_name:<12} │{score:3d}│{progress_bar}│\n"
+            alltime_board += f"{icon} **{i}. {vendor_name}** — {score} balsų\n"
     
-    alltime_board += "└─────────────────────────────────────┘\n\n"
+    alltime_board += "\n"
     
-    # Add footer with statistics and tips
+    # Add simplified footer
     footer = "📊 **STATISTIKOS**\n"
     total_weekly_votes = sum(votes_weekly.values())
     total_monthly_votes = sum(monthly_totals.values())
     total_alltime_votes = sum(votes_alltime.values())
     active_sellers = len([v for v in votes_weekly.values() if v > 0])
     
-    footer += f"• Savaitės balsų: {total_weekly_votes} 🗳️\n"
-    footer += f"• Mėnesio balsų: {total_monthly_votes} 📅\n"
-    footer += f"• Visų laikų balsų: {total_alltime_votes} 🌟\n"
-    footer += f"• Aktyvūs pardavėjai: {active_sellers} 👥\n\n"
+    footer += f"📈 Savaitės balsų: **{total_weekly_votes}**\n"
+    footer += f"📅 Mėnesio balsų: **{total_monthly_votes}**\n"
+    footer += f"🌟 Visų laikų balsų: **{total_alltime_votes}**\n"
+    footer += f"👥 Aktyvūs pardavėjai: **{active_sellers}**\n\n"
     
-    footer += "💡 **PATARIMAI**\n"
-    footer += "• Balsuok kas savaitę už savo mėgstamus pardavėjus\n"
-    footer += "• Skundai padeda palaikyti kokybę (+5 tšk)\n"
-    footer += "• Sekite mėnesio progresą ir konkurenciją\n\n"
-    
-    # Add next reset information
-    next_sunday = now + timedelta(days=(6 - now.weekday()))
-    next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
-    
-    footer += f"⏰ **KITAS RESTARTAS**\n"
-    footer += f"• Savaitės: {next_sunday.strftime('%m-%d %H:%M')}\n"
-    footer += f"• Mėnesio: {next_month.strftime('%m-%d %H:%M')}\n"
+    footer += "💡 Balsuok kas savaitę už mėgstamus pardavėjus!\n"
+    footer += "🎯 Skundai padeda kokybei (+5 tšk)"
     
     # Combine all sections
     full_message = header + weekly_board + monthly_board + alltime_board + footer
