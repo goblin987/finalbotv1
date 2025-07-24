@@ -3391,6 +3391,84 @@ async def patikra_advanced(update: telegram.Update, context: telegram.ext.Contex
     )
     context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
 
+# Cross-group scammer alerts
+async def send_cross_group_alert(scammer_username, profile_data):
+    """Send alerts to all groups about confirmed scammer"""
+    alert_text = f"🚨 **SCAMER Alert** 🚨\n\n"
+    alert_text += f"**Vartotojas:** {scammer_username}\n"
+    alert_text += f"**Kategorija:** {advanced_scammer_db.scammer_categories.get(profile_data['category'], 'Unknown')}\n"
+    alert_text += f"**Rizikos lygis:** {advanced_scammer_db.risk_levels[profile_data['risk_level']]}\n"
+    alert_text += f"**Patvirtinta:** {profile_data['created_date'].strftime('%Y-%m-%d %H:%M')}\n\n"
+    alert_text += f"⚠️ Šis vartotojas buvo pridėtas į scamerių duomenų bazę!\n"
+    alert_text += f"Naudok `/patikra {scammer_username}` daugiau informacijos."
+    
+    # Send to all allowed groups
+    for group_id in allowed_groups:
+        try:
+            await application.bot.send_message(
+                chat_id=int(group_id),
+                text=alert_text,
+                parse_mode='Markdown'
+            )
+            await asyncio.sleep(1)  # Rate limiting
+        except Exception as e:
+            logger.error(f"Failed to send alert to group {group_id}: {str(e)}")
+
+# Admin commands for advanced system
+async def approve_advanced(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Approve advanced scammer report"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /approve_advanced [profile_id]")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    profile_id = context.args[0]
+    if profile_id not in advanced_scammer_db.scammer_profiles:
+        msg = await update.message.reply_text(f"Profilis {profile_id} nerastas!")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    # Approve the profile
+    profile = advanced_scammer_db.scammer_profiles[profile_id]
+    profile['status'] = 'confirmed'
+    profile['confirmed_reports'] += 1
+    profile['last_updated'] = datetime.now(TIMEZONE)
+    
+    # Add to confirmed scammers (legacy system compatibility)
+    confirmed_scammers[profile['username']] = {
+        'confirmed_by': user_id,
+        'reporter_id': profile['reporters'][0]['user_id'],
+        'proof': f"Advanced report ID: {profile_id}",
+        'timestamp': datetime.now(TIMEZONE),
+        'reports_count': profile['confirmed_reports'],
+        'profile_id': profile_id
+    }
+    
+    # Save data
+    advanced_scammer_db.save_database()
+    save_data(confirmed_scammers, 'confirmed_scammers.pkl')
+    
+    # Send cross-group alerts
+    await send_cross_group_alert(profile['original_username'], profile)
+    
+    msg = await update.message.reply_text(
+        f"✅ **PROFILIS PATVIRTINTAS**\n\n"
+        f"**ID:** `{profile_id}`\n"
+        f"**Scameris:** {profile['original_username']}\n"
+        f"**Kategorija:** {advanced_scammer_db.scammer_categories[profile['category']]}\n"
+        f"**Rizikos lygis:** {advanced_scammer_db.risk_levels[profile['risk_level']]}\n\n"
+        f"Kryžminių grupių perspėjimai išsiųsti! 🚨",
+        parse_mode='Markdown'
+    )
+    context.job_queue.run_once(delete_message_job, 90, data=(update.message.chat_id, msg.message_id))
+
+
+
 # Add handlers
 application.add_handler(CommandHandler(['startas'], startas))
 application.add_handler(CommandHandler(['activate_group'], activate_group))
