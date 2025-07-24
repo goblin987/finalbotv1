@@ -192,6 +192,16 @@ def validate_chat_id(chat_id_str: str) -> tuple[bool, int]:
 # Network resilience functions
 async def safe_send_message(bot, chat_id: int, text: str, retries: int = 3, **kwargs):
     """Send message with retry logic and error handling"""
+    # Add longer timeout for large messages
+    if len(text) > 1000:
+        kwargs.setdefault('read_timeout', 30)
+        kwargs.setdefault('write_timeout', 30)
+        kwargs.setdefault('connect_timeout', 20)
+    else:
+        kwargs.setdefault('read_timeout', 20)
+        kwargs.setdefault('write_timeout', 20)
+        kwargs.setdefault('connect_timeout', 10)
+    
     for attempt in range(retries):
         try:
             return await bot.send_message(chat_id=chat_id, text=text, **kwargs)
@@ -200,6 +210,13 @@ async def safe_send_message(bot, chat_id: int, text: str, retries: int = 3, **kw
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 continue
             logger.error(f"Message send timeout after {retries} attempts to chat {chat_id}")
+            # Try one more time with shorter message if original was long
+            if len(text) > 1000:
+                short_text = text[:800] + "\n\n... (Žinutė sutrumpinta dėl klaidų)"
+                try:
+                    return await bot.send_message(chat_id=chat_id, text=short_text)
+                except:
+                    pass
             raise
         except telegram.error.NetworkError as e:
             if attempt < retries - 1:
@@ -212,6 +229,9 @@ async def safe_send_message(bot, chat_id: int, text: str, retries: int = 3, **kw
             raise  # Don't retry bad requests
         except Exception as e:
             logger.error(f"Unexpected error sending message: {str(e)}")
+            if attempt < retries - 1:
+                await asyncio.sleep(1)
+                continue
             raise
 
 async def safe_bot_operation(operation_func, *args, retries: int = 2, **kwargs):
@@ -333,8 +353,8 @@ async def configure_scheduler(application):
         raise
     await initialize_voting_message(application)
 
-# Bot initialization
-application = Application.builder().token(TOKEN).post_init(configure_scheduler).build()
+# Bot initialization with improved timeout settings
+application = Application.builder().token(TOKEN).post_init(configure_scheduler).read_timeout(30).write_timeout(30).connect_timeout(20).build()
 logger.info("Bot initialized")
 
 # Data structures
@@ -374,15 +394,32 @@ def is_allowed_group(chat_id: str) -> bool:
 
 # Message deletion function
 async def delete_message_job(context: telegram.ext.CallbackContext):
+    """Delete message job with proper error handling"""
     job = context.job
-    chat_id, message_id = job.data
+    if not job or not job.data:
+        logger.warning("Delete message job called without proper data")
+        return
+    
     try:
+        chat_id, message_id = job.data
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.debug(f"Successfully deleted message {message_id} from chat {chat_id}")
     except telegram.error.BadRequest as e:
-        if "Message to delete not found" in str(e):
-            pass
+        if "Message to delete not found" in str(e) or "Message can't be deleted" in str(e):
+            logger.debug(f"Message {message_id} already deleted or cannot be deleted")
         else:
-            logger.error(f"Failed to delete message: {str(e)}")
+            logger.warning(f"Failed to delete message {message_id}: {str(e)}")
+    except telegram.error.TelegramError as e:
+        logger.warning(f"Telegram error deleting message {message_id}: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error deleting message {message_id}: {str(e)}")
+    
+    # Ensure job completion
+    try:
+        if hasattr(context.job_queue, 'scheduler') and context.job_queue.scheduler:
+            context.job_queue.scheduler.remove_job(job.id)
+    except:
+        pass  # Job might already be removed
 
 # Initialize or update the persistent voting message
 async def update_voting_message(context):
@@ -1261,72 +1298,109 @@ async def barygos(update: telegram.Update, context: telegram.ext.ContextTypes.DE
     logger.info(f"Barygos message length: {len(full_message)} characters")
     
     try:
-        # Check message length - if too long for caption, send as separate text message
-        if len(full_message) > 1000 and barygos_media_id and barygos_media_type:
-            # Send media without caption first
-            if barygos_media_type == 'photo':
-                await context.bot.send_photo(chat_id=chat_id, photo=barygos_media_id)
-            elif barygos_media_type == 'animation':
-                await context.bot.send_animation(chat_id=chat_id, animation=barygos_media_id)
-            elif barygos_media_type == 'video':
-                await context.bot.send_video(chat_id=chat_id, video=barygos_media_id)
-            
-            # Then send full message as text
-            msg = await context.bot.send_message(
-                chat_id=chat_id, 
-                text=full_message,
-                parse_mode='Markdown'
-            )
-        elif barygos_media_id and barygos_media_type:
-            # Message is short enough for caption
-            if barygos_media_type == 'photo':
-                msg = await context.bot.send_photo(
-                    chat_id=chat_id, 
-                    photo=barygos_media_id, 
-                    caption=full_message,
-                    parse_mode='Markdown'
-                )
-            elif barygos_media_type == 'animation':
-                msg = await context.bot.send_animation(
-                    chat_id=chat_id, 
-                    animation=barygos_media_id, 
-                    caption=full_message,
-                    parse_mode='Markdown'
-                )
-            elif barygos_media_type == 'video':
-                msg = await context.bot.send_video(
-                    chat_id=chat_id, 
-                    video=barygos_media_id, 
-                    caption=full_message,
-                    parse_mode='Markdown'
-                )
-            else:
-                msg = await context.bot.send_message(
-                    chat_id=chat_id, 
-                    text=full_message,
-                    parse_mode='Markdown'
-                )
-        else:
-            # No media, send as text
-            msg = await context.bot.send_message(
-                chat_id=chat_id, 
-                text=full_message,
-                parse_mode='Markdown'
-            )
-        
-        context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))  # Keep longer for reading
-        
-    except telegram.error.TelegramError as e:
-        # Fallback without markdown if formatting fails
-        logger.error(f"Error sending formatted barygos message: {str(e)}")
+        # Use safe_send_message for better reliability
         try:
-            fallback_message = full_message.replace('**', '').replace('*', '')
-            msg = await context.bot.send_message(chat_id=chat_id, text=fallback_message)
-            context.job_queue.run_once(delete_message_job, 90, data=(chat_id, msg.message_id))
-        except Exception as fallback_error:
-            logger.error(f"Fallback message also failed: {str(fallback_error)}")
-            msg = await update.message.reply_text("❌ Klaida gaunant pardavėjų reitingus!")
+            # Check message length - if too long for caption, send as separate text message
+            if len(full_message) > 1000 and barygos_media_id and barygos_media_type:
+                # Send media without caption first
+                if barygos_media_type == 'photo':
+                    await context.bot.send_photo(
+                        chat_id=chat_id, 
+                        photo=barygos_media_id,
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                elif barygos_media_type == 'animation':
+                    await context.bot.send_animation(
+                        chat_id=chat_id, 
+                        animation=barygos_media_id,
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                elif barygos_media_type == 'video':
+                    await context.bot.send_video(
+                        chat_id=chat_id, 
+                        video=barygos_media_id,
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                
+                # Then send full message as text using safe_send_message
+                msg = await safe_send_message(
+                    context.bot,
+                    chat_id,
+                    full_message,
+                    parse_mode='Markdown'
+                )
+            elif barygos_media_id and barygos_media_type:
+                # Message is short enough for caption
+                if barygos_media_type == 'photo':
+                    msg = await context.bot.send_photo(
+                        chat_id=chat_id, 
+                        photo=barygos_media_id, 
+                        caption=full_message,
+                        parse_mode='Markdown',
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                elif barygos_media_type == 'animation':
+                    msg = await context.bot.send_animation(
+                        chat_id=chat_id, 
+                        animation=barygos_media_id, 
+                        caption=full_message,
+                        parse_mode='Markdown',
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                elif barygos_media_type == 'video':
+                    msg = await context.bot.send_video(
+                        chat_id=chat_id, 
+                        video=barygos_media_id, 
+                        caption=full_message,
+                        parse_mode='Markdown',
+                        read_timeout=30,
+                        write_timeout=30
+                    )
+                else:
+                    msg = await safe_send_message(
+                        context.bot,
+                        chat_id,
+                        full_message,
+                        parse_mode='Markdown'
+                    )
+            else:
+                # No media, send as text using safe_send_message
+                msg = await safe_send_message(
+                    context.bot,
+                    chat_id,
+                    full_message,
+                    parse_mode='Markdown'
+                )
+            
+            context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))  # Keep longer for reading
+        
+        except telegram.error.TelegramError as e:
+            # Fallback without markdown if formatting fails
+            logger.error(f"Error sending formatted barygos message: {str(e)}")
+            try:
+                fallback_message = full_message.replace('**', '').replace('*', '')
+                msg = await safe_send_message(context.bot, chat_id, fallback_message)
+                context.job_queue.run_once(delete_message_job, 90, data=(chat_id, msg.message_id))
+            except Exception as fallback_error:
+                logger.error(f"Fallback message also failed: {str(fallback_error)}")
+                try:
+                    msg = await context.bot.send_message(chat_id=chat_id, text="❌ Klaida gaunant pardavėjų reitingus!")
+                    context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+                except:
+                    logger.error(f"Even error message failed for chat {chat_id}")
+                    
+    except Exception as e:
+        logger.error(f"Critical error in barygos command: {str(e)}")
+        try:
+            msg = await context.bot.send_message(chat_id=chat_id, text="❌ Sistemos klaida!")
             context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        except:
+            logger.error(f"Failed to send system error message to chat {chat_id}")
 
 async def chatking(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
@@ -2133,13 +2207,27 @@ async def scameris(update: telegram.Update, context: telegram.ext.ContextTypes.D
         await safe_send_message(context.bot, ADMIN_CHAT_ID, admin_message, parse_mode='Markdown')
         
         # Confirm to user
-        msg = await update.message.reply_text(
-            f"✅ **Pranešimas pateiktas!**\n\n"
-            f"**Report ID:** #{scammer_report_id}\n"
-            f"**Apie:** {reported_username}\n"
-            f"**Statusas:** Laukia admin peržiūros\n\n"
-            f"Adminai peržiūrės jūsų pranešimą ir priims sprendimą. Ačiū už saugios bendruomenės kūrimą! 🛡️"
-        )
+        try:
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ **Pranešimas pateiktas!**\n\n"
+                     f"**Report ID:** #{scammer_report_id}\n"
+                     f"**Apie:** {reported_username}\n"
+                     f"**Statusas:** Laukia admin peržiūros\n\n"
+                     f"Adminai peržiūrės jūsų pranešimą ir priims sprendimą. Ačiū už saugios bendruomenės kūrimą! 🛡️",
+                parse_mode='Markdown'
+            )
+        except telegram.error.TelegramError as e:
+            # Fallback without markdown if that fails
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Pranešimas pateiktas!\n\n"
+                     f"Report ID: #{scammer_report_id}\n"
+                     f"Apie: {reported_username}\n"
+                     f"Statusas: Laukia admin peržiūros\n\n"
+                     f"Adminai peržiūrės jūsų pranešimą ir priims sprendimą. Ačiū už saugios bendruomenės kūrimą!",
+                parse_mode='Markdown'
+            )
         context.job_queue.run_once(delete_message_job, 90, data=(chat_id, msg.message_id))
         
         # Save data
@@ -2154,7 +2242,12 @@ async def scameris(update: telegram.Update, context: telegram.ext.ContextTypes.D
         
     except Exception as e:
         logger.error(f"Error processing scammer report: {str(e)}")
-        msg = await update.message.reply_text("❌ Klaida pateikiant pranešimą. Bandykite vėliau.")
+        try:
+            msg = await context.bot.send_message(chat_id=chat_id, text="❌ Klaida pateikiant pranešimą. Bandykite vėliau.")
+        except:
+            # If even basic sending fails, log it and continue
+            logger.error(f"Failed to send error message to chat {chat_id}")
+            return
         context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
 
 async def patikra(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
@@ -3016,6 +3109,26 @@ async def moderation_command(update: telegram.Update, context: telegram.ext.Cont
     except Exception as e:
         logger.error(f"Error in moderation command: {str(e)}")
 
+# Global error handler
+async def error_handler(update: object, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Log errors and handle them gracefully"""
+    logger.error(f"Exception while handling an update: {context.error}")
+    
+    # Try to send a simple error message if we have update info
+    if isinstance(update, telegram.Update) and update.effective_message:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Oops! Something went wrong. Please try again.",
+                reply_to_message_id=update.effective_message.message_id
+            )
+        except:
+            # If we can't send to the chat, don't crash
+            pass
+    
+    # Log the error with traceback for debugging
+    logger.exception("Full error traceback:", exc_info=context.error)
+
 # Add handlers
 application.add_handler(CommandHandler(['startas'], startas))
 application.add_handler(CommandHandler(['activate_group'], activate_group))
@@ -3057,19 +3170,34 @@ application.add_handler(CommandHandler(['mystats'], mystats))
 application.add_handler(CommandHandler(['botstats'], botstats))
 application.add_handler(CommandHandler(['moderation'], moderation_command))
 
-# Scammer tracking system handlers
-application.add_handler(CommandHandler(['scameris'], scameris))
-application.add_handler(CommandHandler(['patikra'], patikra))
+# Scammer tracking system handlers (Legacy + Advanced)
+application.add_handler(CommandHandler(['scameris'], scameris_advanced))  # Use advanced version
+application.add_handler(CommandHandler(['scameris_simple'], scameris))  # Keep simple version
+application.add_handler(CommandHandler(['patikra'], patikra_advanced))  # Use advanced version  
+application.add_handler(CommandHandler(['patikra_simple'], patikra))  # Keep simple version
 application.add_handler(CommandHandler(['scameriai'], scameriai))  # Public scammer list
 application.add_handler(CommandHandler(['approve_scammer'], approve_scammer))
 application.add_handler(CommandHandler(['reject_scammer'], reject_scammer))
 application.add_handler(CommandHandler(['scammer_list'], scammer_list))  # Admin detailed list
 application.add_handler(CommandHandler(['pending_reports'], pending_reports))
+
+# Advanced scammer system handlers
+application.add_handler(CommandHandler(['approve_advanced'], approve_advanced))
+application.add_handler(CommandHandler(['reject_advanced'], reject_advanced))
+application.add_handler(CommandHandler(['profile_details'], profile_details))
+application.add_handler(CommandHandler(['scammer_networks'], scammer_networks))
+application.add_handler(CommandHandler(['add_to_network'], add_to_network))
+application.add_handler(CommandHandler(['scammer_analytics'], scammer_analytics))
+application.add_handler(CommandHandler(['evidence_details'], evidence_details))
+application.add_handler(CommandHandler(['auto_protection'], auto_protection))
 application.add_handler(MessageHandler(filters.Regex('^/start$') & filters.ChatType.PRIVATE, start_private))
 application.add_handler(CallbackQueryHandler(handle_vote_button, pattern="vote_"))
 application.add_handler(CallbackQueryHandler(handle_poll_button, pattern="poll_"))
 application.add_handler(CallbackQueryHandler(handle_admin_button, pattern="admin_"))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+# Add error handler
+application.add_error_handler(error_handler)
 
 # Schedule jobs
 application.job_queue.run_daily(award_daily_points, time=time(hour=0, minute=0))
@@ -3467,6 +3595,885 @@ class RateLimiter:
 # Initialize moderation systems
 moderation_system = ModerationSystem()
 rate_limiter = RateLimiter()
+
+# Enhanced Scammer Database System
+class AdvancedScammerDatabase:
+    def __init__(self):
+        self.load_database()
+        self.evidence_types = {
+            'screenshot': '📸 Screenshot',
+            'document': '📄 Document', 
+            'voice': '🎵 Voice Message',
+            'video': '🎥 Video',
+            'text': '📝 Text Evidence',
+            'transaction': '💳 Transaction Proof',
+            'chat_log': '💬 Chat Log'
+        }
+        
+        self.scammer_categories = {
+            'seller_scam': '🛒 Seller Scam',
+            'buyer_scam': '💰 Buyer Scam', 
+            'phishing': '🎣 Phishing',
+            'fake_identity': '👤 Fake Identity',
+            'payment_fraud': '💳 Payment Fraud',
+            'social_engineering': '🧠 Social Engineering',
+            'spam_bot': '🤖 Spam Bot',
+            'other': '❓ Other'
+        }
+        
+        self.risk_levels = {
+            1: '🟢 Low Risk',
+            2: '🟡 Medium Risk',
+            3: '🟠 High Risk', 
+            4: '🔴 Critical Risk',
+            5: '⚫ Extreme Danger'
+        }
+    
+    def load_database(self):
+        """Load enhanced scammer database"""
+        self.scammer_profiles = load_data('scammer_profiles.pkl', {})
+        self.evidence_storage = load_data('evidence_storage.pkl', {})
+        self.cross_group_reports = load_data('cross_group_reports.pkl', defaultdict(list))
+        self.scammer_networks = load_data('scammer_networks.pkl', defaultdict(set))
+        self.user_reputation = load_data('user_reputation.pkl', defaultdict(int))
+        self.appeal_cases = load_data('appeal_cases.pkl', {})
+        self.group_settings = load_data('group_settings.pkl', defaultdict(dict))
+        self.auto_actions_log = load_data('auto_actions_log.pkl', [])
+    
+    def save_database(self):
+        """Save all database components"""
+        save_data(self.scammer_profiles, 'scammer_profiles.pkl')
+        save_data(self.evidence_storage, 'evidence_storage.pkl')
+        save_data(dict(self.cross_group_reports), 'cross_group_reports.pkl')
+        save_data(dict(self.scammer_networks), 'scammer_networks.pkl')
+        save_data(dict(self.user_reputation), 'user_reputation.pkl')
+        save_data(self.appeal_cases, 'appeal_cases.pkl')
+        save_data(dict(self.group_settings), 'group_settings.pkl')
+        save_data(self.auto_actions_log, 'auto_actions_log.pkl')
+    
+    def create_scammer_profile(self, username, reporter_data, evidence_data, category='other'):
+        """Create comprehensive scammer profile"""
+        profile_id = f"scam_{int(datetime.now(TIMEZONE).timestamp())}_{random.randint(1000, 9999)}"
+        
+        # Calculate initial risk score
+        risk_score = self.calculate_risk_score(evidence_data, category)
+        
+        profile = {
+            'id': profile_id,
+            'username': username.lower(),
+            'original_username': username,
+            'category': category,
+            'risk_level': risk_score,
+            'status': 'under_review',
+            'created_date': datetime.now(TIMEZONE),
+            'last_updated': datetime.now(TIMEZONE),
+            'reporters': [reporter_data],
+            'evidence': [],
+            'affected_groups': set(),
+            'related_accounts': set(),
+            'admin_notes': [],
+            'public_warnings': 0,
+            'confirmed_reports': 0,
+            'total_damage_reported': 0.0,
+            'appeal_status': None,
+            'auto_actions': []
+        }
+        
+        # Store evidence
+        for evidence in evidence_data:
+            evidence_id = self.store_evidence(evidence, profile_id)
+            profile['evidence'].append(evidence_id)
+        
+        self.scammer_profiles[profile_id] = profile
+        self.cross_group_reports[username.lower()].append(profile_id)
+        
+        return profile_id
+    
+    def store_evidence(self, evidence_data, profile_id):
+        """Store evidence with metadata"""
+        evidence_id = f"ev_{int(datetime.now(TIMEZONE).timestamp())}_{random.randint(100, 999)}"
+        
+        evidence = {
+            'id': evidence_id,
+            'profile_id': profile_id,
+            'type': evidence_data.get('type', 'text'),
+            'content': evidence_data.get('content', ''),
+            'file_id': evidence_data.get('file_id', None),
+            'description': evidence_data.get('description', ''),
+            'timestamp': datetime.now(TIMEZONE),
+            'verified': False,
+            'quality_score': self.assess_evidence_quality(evidence_data),
+            'metadata': evidence_data.get('metadata', {})
+        }
+        
+        self.evidence_storage[evidence_id] = evidence
+        return evidence_id
+    
+    def calculate_risk_score(self, evidence_data, category):
+        """Calculate risk score based on evidence and category"""
+        base_scores = {
+            'seller_scam': 3,
+            'buyer_scam': 2,
+            'phishing': 4,
+            'fake_identity': 3,
+            'payment_fraud': 5,
+            'social_engineering': 4,
+            'spam_bot': 1,
+            'other': 2
+        }
+        
+        score = base_scores.get(category, 2)
+        
+        # Adjust based on evidence quality
+        evidence_bonus = 0
+        for evidence in evidence_data:
+            if evidence.get('type') in ['screenshot', 'video', 'transaction']:
+                evidence_bonus += 0.5
+            elif evidence.get('type') in ['document', 'chat_log']:
+                evidence_bonus += 0.3
+        
+        final_score = min(5, int(score + evidence_bonus))
+        return final_score
+    
+    def assess_evidence_quality(self, evidence_data):
+        """Assess quality of evidence (1-10 scale)"""
+        quality = 5  # Base quality
+        
+        if evidence_data.get('type') in ['video', 'screenshot']:
+            quality += 2
+        elif evidence_data.get('type') in ['document', 'transaction']:
+            quality += 1
+        
+        if len(evidence_data.get('description', '')) > 50:
+            quality += 1
+        
+        if evidence_data.get('metadata', {}).get('verified_source'):
+            quality += 2
+        
+        return min(10, quality)
+    
+    def add_cross_group_report(self, username, group_id, reporter_id, details):
+        """Add report from another group"""
+        report = {
+            'group_id': group_id,
+            'reporter_id': reporter_id,
+            'details': details,
+            'timestamp': datetime.now(TIMEZONE)
+        }
+        
+        self.cross_group_reports[username.lower()].append(report)
+        
+        # Check if this creates a pattern
+        if len(self.cross_group_reports[username.lower()]) >= 2:
+            self.flag_for_investigation(username, "Multiple group reports")
+    
+    def flag_for_investigation(self, username, reason):
+        """Flag user for admin investigation"""
+        logger.warning(f"User {username} flagged for investigation: {reason}")
+        # This could trigger admin notifications
+    
+    def check_scammer_network(self, user_data):
+        """Check if user is part of known scammer network"""
+        # Implementation for checking networks, similar usernames, etc.
+        pass
+    
+    def get_user_risk_assessment(self, username, user_id=None):
+        """Get comprehensive risk assessment for user"""
+        username_lower = username.lower()
+        
+        # Check direct matches
+        if username_lower in [profile['username'] for profile in self.scammer_profiles.values()]:
+            matching_profiles = [p for p in self.scammer_profiles.values() if p['username'] == username_lower]
+            highest_risk = max(p['risk_level'] for p in matching_profiles)
+            return {
+                'risk_level': highest_risk,
+                'status': 'confirmed_scammer',
+                'profiles': matching_profiles,
+                'recommendation': 'BLOCK IMMEDIATELY'
+            }
+        
+        # Check cross-group reports
+        reports = self.cross_group_reports.get(username_lower, [])
+        if len(reports) >= 2:
+            return {
+                'risk_level': 3,
+                'status': 'multiple_reports',
+                'reports': reports,
+                'recommendation': 'EXERCISE CAUTION'
+            }
+        
+        # Check user reputation
+        reputation = self.user_reputation.get(user_id, 0) if user_id else 0
+        if reputation < -5:
+            return {
+                'risk_level': 2,
+                'status': 'low_reputation',
+                'reputation': reputation,
+                'recommendation': 'BE CAREFUL'
+            }
+        
+        return {
+            'risk_level': 1,
+            'status': 'clean',
+            'recommendation': 'APPEARS SAFE'
+        }
+
+# Initialize advanced scammer database
+advanced_scammer_db = AdvancedScammerDatabase()
+
+# Enhanced scammer reporting with evidence
+async def scameris_advanced(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Enhanced scammer reporting with evidence support"""
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    
+    if not is_allowed_group(chat_id):
+        msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Check if user is replying to evidence
+    evidence_data = []
+    if update.message.reply_to_message:
+        reply_msg = update.message.reply_to_message
+        
+        # Extract evidence from replied message
+        if reply_msg.photo:
+            evidence_data.append({
+                'type': 'screenshot',
+                'file_id': reply_msg.photo[-1].file_id,
+                'description': reply_msg.caption or 'Screenshot evidence',
+                'metadata': {'message_id': reply_msg.message_id}
+            })
+        elif reply_msg.document:
+            evidence_data.append({
+                'type': 'document',
+                'file_id': reply_msg.document.file_id,
+                'description': reply_msg.caption or 'Document evidence',
+                'metadata': {'filename': reply_msg.document.file_name}
+            })
+        elif reply_msg.video:
+            evidence_data.append({
+                'type': 'video',
+                'file_id': reply_msg.video.file_id,
+                'description': reply_msg.caption or 'Video evidence',
+                'metadata': {'duration': reply_msg.video.duration}
+            })
+        elif reply_msg.voice:
+            evidence_data.append({
+                'type': 'voice',
+                'file_id': reply_msg.voice.file_id,
+                'description': 'Voice message evidence',
+                'metadata': {'duration': reply_msg.voice.duration}
+            })
+        elif reply_msg.text:
+            evidence_data.append({
+                'type': 'chat_log',
+                'content': reply_msg.text,
+                'description': 'Chat log evidence',
+                'metadata': {'from_user': reply_msg.from_user.username}
+            })
+    
+    # Parse command arguments
+    if len(context.args) < 3:
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="📋 **GELTONIJI SCAMER RAPORTAVIMAS** 📋\n\n"
+                 "**Naudojimas:** `/scameris @username kategorija aprašymas`\n\n"
+                 "**Kategorijos:**\n"
+                 "• `seller` - Pardavėjo scam\n"
+                 "• `buyer` - Pirkėjo scam\n"
+                 "• `phishing` - Phishing\n"
+                 "• `fake` - Fake identity\n"
+                 "• `payment` - Payment fraud\n"
+                 "• `social` - Social engineering\n"
+                 "• `bot` - Spam bot\n"
+                 "• `other` - Kita\n\n"
+                 "**Pavyzdys:** `/scameris @scammer123 seller Nepavede prekės, ignoruoja žinutes`\n\n"
+                 "💡 **Patarimas:** Atsakyk į žinutę su įrodymais prieš naudodamas komandą!",
+            parse_mode='Markdown'
+        )
+        context.job_queue.run_once(delete_message_job, 90, data=(chat_id, msg.message_id))
+        return
+    
+    # Validate inputs
+    reported_username = sanitize_username(context.args[0])
+    category_map = {
+        'seller': 'seller_scam',
+        'buyer': 'buyer_scam',
+        'phishing': 'phishing',
+        'fake': 'fake_identity',
+        'payment': 'payment_fraud',
+        'social': 'social_engineering',
+        'bot': 'spam_bot',
+        'other': 'other'
+    }
+    
+    category = category_map.get(context.args[1].lower(), 'other')
+    description = sanitize_text_input(" ".join(context.args[2:]), max_length=1000)
+    
+    if not description or len(description) < 10:
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Prašau nurodyti detalų aprašymą (bent 10 simbolių)!"
+        )
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Add text evidence if no other evidence provided
+    if not evidence_data:
+        evidence_data.append({
+            'type': 'text',
+            'content': description,
+            'description': 'Reporter description'
+        })
+    
+    # Create reporter data
+    reporter_data = {
+        'user_id': user_id,
+        'username': f"@{update.message.from_user.username}" if update.message.from_user.username else f"User {user_id}",
+        'group_id': chat_id,
+        'timestamp': datetime.now(TIMEZONE),
+        'reputation': advanced_scammer_db.user_reputation.get(user_id, 0)
+    }
+    
+    # Create scammer profile
+    profile_id = advanced_scammer_db.create_scammer_profile(
+        reported_username, 
+        reporter_data, 
+        evidence_data, 
+        category
+    )
+    
+    # Save database
+    advanced_scammer_db.save_database()
+    
+    # Send confirmation
+    category_display = advanced_scammer_db.scammer_categories[category]
+    risk_display = advanced_scammer_db.risk_levels[advanced_scammer_db.scammer_profiles[profile_id]['risk_level']]
+    
+    confirmation_text = f"✅ **SCAMER RAPORTAJE GAVESITAS** ✅\n\n"
+    confirmation_text += f"**ID:** `{profile_id}`\n"
+    confirmation_text += f"**Apie:** {reported_username}\n"
+    confirmation_text += f"**Kategorija:** {category_display}\n"
+    confirmation_text += f"**Rizikos lygis:** {risk_display}\n"
+    confirmation_text += f"**Įrodymų:** {len(evidence_data)}\n"
+    confirmation_text += f"**Statusas:** 🔍 Tikrinamas\n\n"
+    confirmation_text += f"Adminai peržiūrės per 24h. Ačiū už saugesnę bendruomenę! 🛡️"
+    
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=confirmation_text,
+        parse_mode='Markdown'
+    )
+    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+    
+    # Notify admins
+    admin_text = f"🚨 **NAUJAS IŠPLĖSTAS SCAMER PRANEŠIMAS** 🚨\n\n"
+    admin_text += f"**Profile ID:** `{profile_id}`\n"
+    admin_text += f"**Username:** {reported_username}\n"
+    admin_text += f"**Kategorija:** {category_display}\n"
+    admin_text += f"**Rizikos lygis:** {risk_display}\n"
+    admin_text += f"**Reporteris:** {reporter_data['username']}\n"
+    admin_text += f"**Grupė:** {chat_id}\n"
+    admin_text += f"**Įrodymų tipai:** {', '.join(ev['type'] for ev in evidence_data)}\n"
+    admin_text += f"**Aprašymas:** {description}\n\n"
+    admin_text += f"**Veiksmai:**\n"
+    admin_text += f"✅ `/approve_advanced {profile_id}` - Patvirtinti\n"
+    admin_text += f"❌ `/reject_advanced {profile_id}` - Atmesti\n"
+    admin_text += f"📋 `/profile_details {profile_id}` - Detalės\n"
+    admin_text += f"🔗 `/add_to_network {profile_id} network_name` - Pridėti į tinklą"
+    
+    await safe_send_message(context.bot, ADMIN_CHAT_ID, admin_text, parse_mode='Markdown')
+    
+    # Add points
+    user_points[user_id] = user_points.get(user_id, 0) + 5  # More points for detailed reports
+    save_data(user_points, 'user_points.pkl')
+    
+    logger.info(f"Advanced scammer report {profile_id}: {reported_username} reported by user {user_id}")
+
+# Enhanced scammer check with risk assessment
+async def patikra_advanced(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Enhanced user safety check with risk assessment"""
+    chat_id = update.message.chat_id
+    
+    if not is_allowed_group(chat_id):
+        msg = await update.message.reply_text("Botas neveikia šioje grupėje!")
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    if len(context.args) < 1:
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="📋 **IŠPLĖSTA SAUGUMO PATIKRA** 📋\n\n"
+                 "**Naudojimas:** `/patikra @username`\n\n"
+                 "**Funkcijos:**\n"
+                 "• 🔍 Scamerių duomenų bazės patikra\n"
+                 "• 📊 Rizikos lygio vertinimas\n"
+                 "• 🌐 Kelių grupių duomenų analizė\n"
+                 "• 🔗 Scamerių tinklų patikra\n"
+                 "• 📈 Reputacijos analizė\n\n"
+                 "**Pavyzdys:** `/patikra @user123`",
+            parse_mode='Markdown'
+        )
+        context.job_queue.run_once(delete_message_job, 60, data=(chat_id, msg.message_id))
+        return
+    
+    # Get username
+    check_username = sanitize_username(context.args[0])
+    if not check_username:
+        msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Netinkamas vartotojo vardas! Naudok @username formatą."
+        )
+        context.job_queue.run_once(delete_message_job, 45, data=(chat_id, msg.message_id))
+        return
+    
+    # Get comprehensive risk assessment
+    risk_assessment = advanced_scammer_db.get_user_risk_assessment(check_username)
+    
+    # Build response
+    response_text = f"🔍 **SAUGUMO ATASKAITA** 🔍\n\n"
+    response_text += f"**Vartotojas:** {check_username}\n"
+    response_text += f"**Rizikos lygis:** {advanced_scammer_db.risk_levels[risk_assessment['risk_level']]}\n"
+    response_text += f"**Statusas:** {risk_assessment['status'].replace('_', ' ').title()}\n"
+    response_text += f"**Rekomendacija:** {risk_assessment['recommendation']}\n\n"
+    
+    # Add detailed information based on status
+    if risk_assessment['status'] == 'confirmed_scammer':
+        profiles = risk_assessment['profiles']
+        response_text += f"⚠️ **PAVOJUS! PATVIRTINTAS SCAMERIS** ⚠️\n\n"
+        for profile in profiles[:3]:  # Show max 3 profiles
+            category = advanced_scammer_db.scammer_categories.get(profile['category'], 'Unknown')
+            response_text += f"• **Kategorija:** {category}\n"
+            response_text += f"• **Sukurta:** {profile['created_date'].strftime('%Y-%m-%d')}\n"
+            response_text += f"• **Patvirtinta pranešimų:** {profile['confirmed_reports']}\n\n"
+    
+    elif risk_assessment['status'] == 'multiple_reports':
+        reports = risk_assessment['reports']
+        response_text += f"⚠️ **KELIŲ GRUPIŲ PRANEŠIMAI** ⚠️\n\n"
+        response_text += f"• **Pranešimų:** {len(reports)}\n"
+        recent_reports = sorted(reports, key=lambda x: x.get('timestamp', datetime.min), reverse=True)[:3]
+        for report in recent_reports:
+            if isinstance(report, dict) and 'timestamp' in report:
+                response_text += f"• {report['timestamp'].strftime('%Y-%m-%d')}: {report.get('details', 'Report')}\n"
+    
+    elif risk_assessment['status'] == 'low_reputation':
+        response_text += f"📉 **ŽEMA REPUTACIJA** 📉\n\n"
+        response_text += f"• **Reputacijos taškai:** {risk_assessment['reputation']}\n"
+        response_text += f"• **Patarimas:** Būkite atsargūs su sandoriais\n"
+    
+    else:
+        response_text += f"✅ **ŠVARUS VARTOTOJAS** ✅\n\n"
+        response_text += f"• Nėra žinomų pranešimų\n"
+        response_text += f"• Nėra rizikos indikatorių\n"
+        response_text += f"• Sandoriai turėtų būti saugūs\n"
+    
+    # Add general safety tips
+    response_text += f"\n🛡️ **SAUGUMO PATARIMAI:**\n"
+    response_text += f"• Visada patikrinkite prieš sandorį\n"
+    response_text += f"• Naudokite apsaugotus mokėjimo būdus\n"
+    response_text += f"• Nepateikite asmeninės informacijos\n"
+    response_text += f"• Praneškit apie įtartinus veiksmus"
+    
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=response_text,
+        parse_mode='Markdown'
+    )
+    context.job_queue.run_once(delete_message_job, 120, data=(chat_id, msg.message_id))
+
+# Cross-group scammer alerts
+async def send_cross_group_alert(scammer_username, profile_data):
+    """Send alerts to all groups about confirmed scammer"""
+    alert_text = f"🚨 **SCAMER Alert** 🚨\n\n"
+    alert_text += f"**Vartotojas:** {scammer_username}\n"
+    alert_text += f"**Kategorija:** {advanced_scammer_db.scammer_categories.get(profile_data['category'], 'Unknown')}\n"
+    alert_text += f"**Rizikos lygis:** {advanced_scammer_db.risk_levels[profile_data['risk_level']]}\n"
+    alert_text += f"**Patvirtinta:** {profile_data['created_date'].strftime('%Y-%m-%d %H:%M')}\n\n"
+    alert_text += f"⚠️ Šis vartotojas buvo pridėtas į scamerių duomenų bazę!\n"
+    alert_text += f"Naudok `/patikra {scammer_username}` daugiau informacijos."
+    
+    # Send to all allowed groups
+    for group_id in allowed_groups:
+        try:
+            await application.bot.send_message(
+                chat_id=int(group_id),
+                text=alert_text,
+                parse_mode='Markdown'
+            )
+            await asyncio.sleep(1)  # Rate limiting
+        except Exception as e:
+            logger.error(f"Failed to send alert to group {group_id}: {str(e)}")
+
+# Admin commands for advanced system
+async def approve_advanced(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Approve advanced scammer report"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /approve_advanced [profile_id]")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    profile_id = context.args[0]
+    if profile_id not in advanced_scammer_db.scammer_profiles:
+        msg = await update.message.reply_text(f"Profilis {profile_id} nerastas!")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    # Approve the profile
+    profile = advanced_scammer_db.scammer_profiles[profile_id]
+    profile['status'] = 'confirmed'
+    profile['confirmed_reports'] += 1
+    profile['last_updated'] = datetime.now(TIMEZONE)
+    
+    # Add to confirmed scammers (legacy system compatibility)
+    confirmed_scammers[profile['username']] = {
+        'confirmed_by': user_id,
+        'reporter_id': profile['reporters'][0]['user_id'],
+        'proof': f"Advanced report ID: {profile_id}",
+        'timestamp': datetime.now(TIMEZONE),
+        'reports_count': profile['confirmed_reports'],
+        'profile_id': profile_id
+    }
+    
+    # Save data
+    advanced_scammer_db.save_database()
+    save_data(confirmed_scammers, 'confirmed_scammers.pkl')
+    
+    # Send cross-group alerts
+    await send_cross_group_alert(profile['original_username'], profile)
+    
+    msg = await update.message.reply_text(
+        f"✅ **PROFILIS PATVIRTINTAS**\n\n"
+        f"**ID:** `{profile_id}`\n"
+        f"**Scameris:** {profile['original_username']}\n"
+        f"**Kategorija:** {advanced_scammer_db.scammer_categories[profile['category']]}\n"
+        f"**Rizikos lygis:** {advanced_scammer_db.risk_levels[profile['risk_level']]}\n\n"
+        f"Kryžminių grupių perspėjimai išsiųsti! 🚨",
+        parse_mode='Markdown'
+    )
+    context.job_queue.run_once(delete_message_job, 90, data=(update.message.chat_id, msg.message_id))
+
+async def reject_advanced(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Reject advanced scammer report"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /reject_advanced [profile_id] [reason]")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    profile_id = context.args[0]
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "Insufficient evidence"
+    
+    if profile_id not in advanced_scammer_db.scammer_profiles:
+        msg = await update.message.reply_text(f"Profilis {profile_id} nerastas!")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    # Reject the profile
+    profile = advanced_scammer_db.scammer_profiles[profile_id]
+    profile['status'] = 'rejected'
+    profile['admin_notes'].append(f"Rejected by {user_id}: {reason}")
+    profile['last_updated'] = datetime.now(TIMEZONE)
+    
+    # Save database
+    advanced_scammer_db.save_database()
+    
+    msg = await update.message.reply_text(
+        f"❌ **PROFILIS ATMESTAS**\n\n"
+        f"**ID:** `{profile_id}`\n"
+        f"**Vartotojas:** {profile['original_username']}\n"
+        f"**Priežastis:** {reason}\n"
+        f"**Statusas:** Atmestas",
+        parse_mode='Markdown'
+    )
+    context.job_queue.run_once(delete_message_job, 60, data=(update.message.chat_id, msg.message_id))
+
+async def profile_details(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show detailed profile information"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /profile_details [profile_id]")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    profile_id = context.args[0]
+    if profile_id not in advanced_scammer_db.scammer_profiles:
+        msg = await update.message.reply_text(f"Profilis {profile_id} nerastas!")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    profile = advanced_scammer_db.scammer_profiles[profile_id]
+    
+    # Build detailed report
+    details_text = f"📋 **PROFILIO DETALĖS** 📋\n\n"
+    details_text += f"**ID:** `{profile_id}`\n"
+    details_text += f"**Username:** {profile['original_username']}\n"
+    details_text += f"**Kategorija:** {advanced_scammer_db.scammer_categories[profile['category']]}\n"
+    details_text += f"**Rizikos lygis:** {advanced_scammer_db.risk_levels[profile['risk_level']]}\n"
+    details_text += f"**Statusas:** {profile['status'].title()}\n"
+    details_text += f"**Sukurta:** {profile['created_date'].strftime('%Y-%m-%d %H:%M')}\n"
+    details_text += f"**Atnaujinta:** {profile['last_updated'].strftime('%Y-%m-%d %H:%M')}\n\n"
+    
+    # Reporter information
+    reporter = profile['reporters'][0]
+    details_text += f"**📝 PRANEŠĖJAS:**\n"
+    details_text += f"• Username: {reporter['username']}\n"
+    details_text += f"• User ID: {reporter['user_id']}\n"
+    details_text += f"• Grupė: {reporter['group_id']}\n"
+    details_text += f"• Reputacija: {reporter['reputation']}\n\n"
+    
+    # Evidence summary
+    details_text += f"**🔍 ĮRODYMAI ({len(profile['evidence'])}):**\n"
+    for evidence_id in profile['evidence'][:5]:  # Show first 5
+        evidence = advanced_scammer_db.evidence_storage.get(evidence_id, {})
+        evidence_type = advanced_scammer_db.evidence_types.get(evidence.get('type', 'unknown'), 'Unknown')
+        quality = evidence.get('quality_score', 0)
+        details_text += f"• {evidence_type} (Kokybė: {quality}/10)\n"
+    
+    if len(profile['evidence']) > 5:
+        details_text += f"• ... ir dar {len(profile['evidence']) - 5} įrodymų\n"
+    
+    details_text += f"\n**📊 STATISTIKOS:**\n"
+    details_text += f"• Patvirtinta pranešimų: {profile['confirmed_reports']}\n"
+    details_text += f"• Viešų perspėjimų: {profile['public_warnings']}\n"
+    details_text += f"• Susiję accounts: {len(profile['related_accounts'])}\n"
+    details_text += f"• Paveiktos grupės: {len(profile['affected_groups'])}\n"
+    
+    # Admin notes
+    if profile['admin_notes']:
+        details_text += f"\n**📝 ADMIN PASTABOS:**\n"
+        for note in profile['admin_notes'][-3:]:  # Last 3 notes
+            details_text += f"• {note}\n"
+    
+    msg = await update.message.reply_text(details_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 180, data=(update.message.chat_id, msg.message_id))
+
+async def scammer_networks(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show scammer networks"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    networks_text = f"🔗 **SCAMERIŲ TINKLAI** 🔗\n\n"
+    
+    if not advanced_scammer_db.scammer_networks:
+        networks_text += "Dar nėra nustatytų scamerių tinklų.\n"
+        networks_text += "Naudok `/add_to_network profile_id network_name` sukurti tinklą."
+    else:
+        for network_name, members in advanced_scammer_db.scammer_networks.items():
+            networks_text += f"**🔗 {network_name}**\n"
+            networks_text += f"Narių: {len(members)}\n"
+            
+            # Show some members
+            member_list = list(members)[:5]
+            for member in member_list:
+                if member in advanced_scammer_db.scammer_profiles:
+                    profile = advanced_scammer_db.scammer_profiles[member]
+                    networks_text += f"• {profile['original_username']}\n"
+            
+            if len(members) > 5:
+                networks_text += f"• ... ir dar {len(members) - 5} narių\n"
+            networks_text += "\n"
+    
+    msg = await update.message.reply_text(networks_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(update.message.chat_id, msg.message_id))
+
+async def add_to_network(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Add scammer to network"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    if len(context.args) < 2:
+        msg = await update.message.reply_text("Naudok: /add_to_network [profile_id] [network_name]")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    profile_id = context.args[0]
+    network_name = " ".join(context.args[1:])
+    
+    if profile_id not in advanced_scammer_db.scammer_profiles:
+        msg = await update.message.reply_text(f"Profilis {profile_id} nerastas!")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    # Add to network
+    advanced_scammer_db.scammer_networks[network_name].add(profile_id)
+    
+    # Update profile
+    profile = advanced_scammer_db.scammer_profiles[profile_id]
+    profile['admin_notes'].append(f"Added to network '{network_name}' by admin {user_id}")
+    profile['last_updated'] = datetime.now(TIMEZONE)
+    
+    # Save database
+    advanced_scammer_db.save_database()
+    
+    msg = await update.message.reply_text(
+        f"✅ **PRIDĖTAS Į TINKLĄ**\n\n"
+        f"**Profilis:** `{profile_id}`\n"
+        f"**Vartotojas:** {profile['original_username']}\n"
+        f"**Tinklas:** {network_name}\n"
+        f"**Narių tinkle:** {len(advanced_scammer_db.scammer_networks[network_name])}",
+        parse_mode='Markdown'
+    )
+    context.job_queue.run_once(delete_message_job, 60, data=(update.message.chat_id, msg.message_id))
+
+async def scammer_analytics(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show scammer database analytics"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    # Calculate statistics
+    total_profiles = len(advanced_scammer_db.scammer_profiles)
+    confirmed_profiles = len([p for p in advanced_scammer_db.scammer_profiles.values() if p['status'] == 'confirmed'])
+    pending_profiles = len([p for p in advanced_scammer_db.scammer_profiles.values() if p['status'] == 'under_review'])
+    rejected_profiles = len([p for p in advanced_scammer_db.scammer_profiles.values() if p['status'] == 'rejected'])
+    
+    # Category breakdown
+    categories = {}
+    for profile in advanced_scammer_db.scammer_profiles.values():
+        cat = profile['category']
+        categories[cat] = categories.get(cat, 0) + 1
+    
+    # Risk level breakdown
+    risk_levels = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    for profile in advanced_scammer_db.scammer_profiles.values():
+        risk_levels[profile['risk_level']] += 1
+    
+    analytics_text = f"📊 **SCAMERIŲ DUOMENŲ BAZĖS ANALITIKA** 📊\n\n"
+    analytics_text += f"**📈 BENDRAS APŽVALGA:**\n"
+    analytics_text += f"• Viso profilių: {total_profiles}\n"
+    analytics_text += f"• Patvirtinti: {confirmed_profiles}\n"
+    analytics_text += f"• Laukiantys: {pending_profiles}\n"
+    analytics_text += f"• Atmesti: {rejected_profiles}\n"
+    analytics_text += f"• Tinklų: {len(advanced_scammer_db.scammer_networks)}\n"
+    analytics_text += f"• Įrodymų: {len(advanced_scammer_db.evidence_storage)}\n\n"
+    
+    analytics_text += f"**🏷️ KATEGORIJOS:**\n"
+    for cat, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        cat_name = advanced_scammer_db.scammer_categories.get(cat, cat)
+        analytics_text += f"• {cat_name}: {count}\n"
+    
+    analytics_text += f"\n**⚠️ RIZIKOS LYGIAI:**\n"
+    for level, count in risk_levels.items():
+        if count > 0:
+            level_name = advanced_scammer_db.risk_levels[level]
+            analytics_text += f"• {level_name}: {count}\n"
+    
+    # Recent activity
+    recent_profiles = sorted(
+        [p for p in advanced_scammer_db.scammer_profiles.values()],
+        key=lambda x: x['created_date'],
+        reverse=True
+    )[:5]
+    
+    analytics_text += f"\n**🕒 PASKUTINIAI PRANEŠIMAI:**\n"
+    for profile in recent_profiles:
+        analytics_text += f"• {profile['original_username']} ({profile['created_date'].strftime('%m-%d %H:%M')})\n"
+    
+    msg = await update.message.reply_text(analytics_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(update.message.chat_id, msg.message_id))
+
+async def evidence_details(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Show evidence details"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    if len(context.args) < 1:
+        msg = await update.message.reply_text("Naudok: /evidence_details [evidence_id]")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    evidence_id = context.args[0]
+    if evidence_id not in advanced_scammer_db.evidence_storage:
+        msg = await update.message.reply_text(f"Įrodymas {evidence_id} nerastas!")
+        context.job_queue.run_once(delete_message_job, 45, data=(update.message.chat_id, msg.message_id))
+        return
+    
+    evidence = advanced_scammer_db.evidence_storage[evidence_id]
+    profile = advanced_scammer_db.scammer_profiles.get(evidence['profile_id'], {})
+    
+    details_text = f"🔍 **ĮRODYMO DETALĖS** 🔍\n\n"
+    details_text += f"**ID:** `{evidence_id}`\n"
+    details_text += f"**Tipas:** {advanced_scammer_db.evidence_types.get(evidence['type'], 'Unknown')}\n"
+    details_text += f"**Kokybės rezultatas:** {evidence['quality_score']}/10\n"
+    details_text += f"**Patvirtintas:** {'Taip' if evidence['verified'] else 'Ne'}\n"
+    details_text += f"**Sukurta:** {evidence['timestamp'].strftime('%Y-%m-%d %H:%M')}\n\n"
+    
+    details_text += f"**📝 APRAŠYMAS:**\n{evidence['description']}\n\n"
+    
+    if evidence['content']:
+        content_preview = evidence['content'][:200]
+        if len(evidence['content']) > 200:
+            content_preview += "..."
+        details_text += f"**📄 TURINYS:**\n{content_preview}\n\n"
+    
+    details_text += f"**🔗 SUSIJĘS PROFILIS:**\n"
+    if profile:
+        details_text += f"• {profile['original_username']}\n"
+        details_text += f"• Kategorija: {advanced_scammer_db.scammer_categories.get(profile['category'], 'Unknown')}\n"
+    else:
+        details_text += "• Profilis nerastas\n"
+    
+    # Metadata
+    if evidence['metadata']:
+        details_text += f"\n**⚙️ METADUOMENYS:**\n"
+        for key, value in evidence['metadata'].items():
+            details_text += f"• {key}: {value}\n"
+    
+    msg = await update.message.reply_text(details_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(update.message.chat_id, msg.message_id))
+
+async def auto_protection(update: telegram.Update, context: telegram.ext.ContextTypes.DEFAULT_TYPE) -> None:
+    """Configure automatic protection settings"""
+    user_id = update.message.from_user.id
+    
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    protection_text = f"🛡️ **AUTOMATINĖ APSAUGA** 🛡️\n\n"
+    protection_text += f"**🔧 GALIMI NUSTATYMAI:**\n\n"
+    protection_text += f"**1. Auto-warn** - Automatiniai perspėjimai\n"
+    protection_text += f"Komanda: `/auto_warn on/off`\n\n"
+    protection_text += f"**2. Auto-ban** - Automatiniai banai\n"
+    protection_text += f"Komanda: `/auto_ban risk_level`\n"
+    protection_text += f"Pavyzdys: `/auto_ban 4` (ban 4+ rizikos)\n\n"
+    protection_text += f"**3. New-user screening** - Naujų vartotojų tikrinimas\n"
+    protection_text += f"Komanda: `/screening on/off`\n\n"
+    protection_text += f"**4. Cross-group alerts** - Kryžminiai perspėjimai\n"
+    protection_text += f"Komanda: `/cross_alerts on/off`\n\n"
+    protection_text += f"**📊 DABARTINIAI NUSTATYMAI:**\n"
+    
+    # Show current settings for each group
+    for group_id in allowed_groups:
+        settings = advanced_scammer_db.group_settings.get(group_id, {})
+        protection_text += f"• Grupė {group_id}:\n"
+        protection_text += f"  - Auto-warn: {'ON' if settings.get('auto_warn', False) else 'OFF'}\n"
+        protection_text += f"  - Auto-ban: Risk {settings.get('auto_ban_level', 'OFF')}\n"
+        protection_text += f"  - Screening: {'ON' if settings.get('screening', False) else 'OFF'}\n"
+    
+    msg = await update.message.reply_text(protection_text, parse_mode='Markdown')
+    context.job_queue.run_once(delete_message_job, 120, data=(update.message.chat_id, msg.message_id))
 
 if __name__ == '__main__':
     try:
